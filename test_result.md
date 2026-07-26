@@ -486,6 +486,36 @@ backend:
           comment: "POST /api/paypal/create-order with 14x36 sheet + HI shipping returned HTTP 201. PayPal sandbox order created (orderID: 23B306044B967690D), internal order persisted (id: 42ac4b71-c137-45a9-8e8a-fdedc0de3018). HI tax correctly applied: taxRate=0.04712, tax=$0.85, total=$18.85. GET /api/orders/:id successfully retrieved the order with status=PENDING. PayPal integration and order persistence working correctly - no regression."
 
 frontend:
+  - task: "Builder Upload Panel enforces PNG-only + <25MB with toasts"
+    implemented: true
+    working: true
+    file: "app/builder/BuilderClient.tsx, components/builder/UploadPanel.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "UploadPanel input restricts accept='image/png' and copy reads 'PNG only · under 25 MB'. Client validation in BuilderClient.addToLibrary rejects non-PNG with 'PNG only' toast and >25MB with 'must be under 25 MB' toast. Needs UI test at /builder."
+        - working: true
+          agent: "testing"
+          comment: "✓ VERIFIED at http://localhost:3000/builder. Empty state text displays exactly 'PNG only · under 25 MB · multi-select supported'. Input has accept='image/png' attribute. JPEG upload rejected with 'PNG only' toast (library remained at 0 items). Valid PNG uploaded successfully (library increased to 1 item). >25MB PNG rejected with size limit toast (library remained at 1 item). All validation working correctly."
+
+  - task: "Builder Layers panel — per-item Delete (X) button"
+    implemented: true
+    working: true
+    file: "components/builder/Sidebar.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "New per-row X icon in the Layers list, testid `b-layer-del-<id>`. Should call onRemove(id) and remove item from canvas + layers list without touching other items."
+        - working: true
+          agent: "testing"
+          comment: "✓ VERIFIED at http://localhost:3000/builder. Uploaded 2 PNGs, placed both on sheet → Layers (2). Clicked X on first layer → Layers (1), first layer removed from canvas and list, second layer remained intact. Clicked X on remaining layer → Layers (0), canvas cleared, placeholder text 'Click an item on the sheet to edit...' displayed. Per-item delete working perfectly without affecting other layers."
+
   - task: "Builder /builder route renders Konva canvas, upload panel, sidebar, cart bar"
     implemented: true
     working: true
@@ -589,3 +619,28 @@ agent_communication:
         **NO REGRESSIONS** - all previously working endpoints still working correctly.
 
         All backend tasks marked as needs_retesting=false. Ready for production.
+    - agent: "testing"
+      message: |
+        ✅ FRONTEND UI VALIDATION COMPLETE - ALL TESTS PASSED
+        
+        Tested two NEW builder features at http://localhost:3000/builder per review request:
+        
+        **TEST 1: Upload Panel PNG-only + <25MB enforcement** ✅ WORKING
+        - Empty state text verified: "PNG only · under 25 MB · multi-select supported" ✓
+        - Input accept attribute: "image/png" ✓
+        - JPEG upload rejected with "PNG only" toast, library remained at 0 items ✓
+        - Valid PNG uploaded successfully, library increased to 1 item ✓
+        - >25MB PNG rejected with size limit toast, library remained at 1 item ✓
+        
+        **TEST 2: Layers panel per-item Delete (X)** ✅ WORKING
+        - Uploaded 2 PNGs, placed both on sheet → Layers (2) ✓
+        - Deleted first layer → Layers (1), first layer removed, second intact ✓
+        - Deleted remaining layer → Layers (0), canvas cleared ✓
+        - Placeholder text displayed: "Click an item on the sheet to edit..." ✓
+        
+        **TEST 3: Cart page smoke test** ✅ WORKING
+        - Empty cart state verified with proper messaging ✓
+        - Added item from builder via "Add to Cart" button ✓
+        - Item visible in cart with server-validated total ($26.00) ✓
+        
+        Both frontend tasks marked working=true, needs_retesting=false. No bugs found.

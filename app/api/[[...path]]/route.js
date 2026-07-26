@@ -17,12 +17,19 @@ const EXT_BY_MIME = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'we
 let client
 let db
 async function connectToMongo() {
-  if (!client) {
+  if (client && db) return db
+  try {
     client = new MongoClient(process.env.MONGO_URL)
     await client.connect()
     db = client.db(process.env.DB_NAME)
+    return db
+  } catch (e) {
+    // Reset so the next call retries from scratch
+    try { if (client) await client.close() } catch {}
+    client = null
+    db = null
+    throw e
   }
-  return db
 }
 
 function handleCORS(response) {

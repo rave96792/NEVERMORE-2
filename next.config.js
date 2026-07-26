@@ -1,5 +1,4 @@
 const nextConfig = {
-  output: 'standalone',
   // Allow the Emergent preview iframe origins to hit dev-server /_next/* assets
   allowedDevOrigins: [
     'dtf-checkout-inspect.preview.emergentagent.com',

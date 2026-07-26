@@ -259,6 +259,40 @@ async function handleRoute(request, { params }) {
       }))
     }
 
+    // Diagnostic: which upstream is broken?  GET /api/health
+    if (route === '/health' && method === 'GET') {
+      const out = { ok: true, checks: {} }
+      // Mongo
+      try {
+        const db = await connectToMongo()
+        await db.command({ ping: 1 })
+        out.checks.mongo = { ok: true }
+      } catch (e) {
+        out.ok = false
+        out.checks.mongo = { ok: false, error: (e && e.message) || String(e) }
+      }
+      // PayPal token
+      try {
+        const t = await paypalToken()
+        out.checks.paypal = { ok: !!t, base: PAYPAL_BASE }
+      } catch (e) {
+        out.ok = false
+        out.checks.paypal = { ok: false, error: (e && e.message) || String(e) }
+      }
+      // Env presence (booleans only — never expose values)
+      out.checks.env = {
+        MONGO_URL: !!process.env.MONGO_URL,
+        DB_NAME: !!process.env.DB_NAME,
+        PAYPAL_CLIENT_ID: !!process.env.PAYPAL_CLIENT_ID,
+        PAYPAL_CLIENT_SECRET: !!process.env.PAYPAL_CLIENT_SECRET,
+        RESEND_API_KEY: !!process.env.RESEND_API_KEY,
+        BLOB_READ_WRITE_TOKEN: !!process.env.BLOB_READ_WRITE_TOKEN,
+        NEXT_PUBLIC_BASE_URL: process.env.NEXT_PUBLIC_BASE_URL || null,
+        PAYPAL_ENV: process.env.PAYPAL_ENV || null,
+      }
+      return handleCORS(NextResponse.json(out, { status: out.ok ? 200 : 503 }))
+    }
+
     // POST /api/contact — contact form submissions from /contact
     if (route === '/contact' && method === 'POST') {
       const body = await request.json()

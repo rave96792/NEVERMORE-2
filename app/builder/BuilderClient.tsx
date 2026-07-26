@@ -252,6 +252,7 @@ export default function BuilderClient() {
                 onSelect={select}
                 onUpdate={updateItem}
                 onCanvasSize={(w, h) => setCanvasSize({ w, h })}
+                onZoom={(z) => setZoom(z)}
               />
             </div>
             <Sidebar

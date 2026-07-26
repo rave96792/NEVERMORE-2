@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState, type ReactElement } from 'react'
 import { Stage, Layer, Rect, Line, Text, Image as KImage, Transformer, Group } from 'react-konva'
 import type Konva from 'konva'
 import useImage from 'use-image'
+import { usePinch } from '@use-gesture/react'
 import { SHEETS, CANVAS_PPI, GRID_IN, SNAP_IN, BOUNDARY_MARGIN_IN } from '@/lib/builder/constants'
 import type { ArtworkItem, Layout } from '@/lib/builder/types'
 import { computeSnapGuides, type SnapGuide } from '@/lib/builder/align'
@@ -19,9 +20,10 @@ interface Props {
   onSelect: (id: string | null) => void
   onUpdate: (id: string, patch: Partial<ArtworkItem>) => void
   onCanvasSize?: (w: number, h: number) => void
+  onZoom?: (nextZoom: number) => void
 }
 
-export default function Workspace({ layout, selectedId, zoom, showGrid, snap, onSelect, onUpdate, onCanvasSize }: Props) {
+export default function Workspace({ layout, selectedId, zoom, showGrid, snap, onSelect, onUpdate, onCanvasSize, onZoom }: Props) {
   const sheet = SHEETS[layout.sheetSizeId]
   const wPx = sheet.widthIn * CANVAS_PPI
   const hPx = sheet.lengthIn * CANVAS_PPI
@@ -38,6 +40,25 @@ export default function Workspace({ layout, selectedId, zoom, showGrid, snap, on
 
   // Live snap guides while dragging
   const [snapGuides, setSnapGuides] = useState<SnapGuide[]>([])
+
+  // Pinch-zoom on the container (mobile/tablet). Also handles trackpad pinch on desktop.
+  usePinch(
+    ({ offset: [scale], event }) => {
+      // Only handle when there IS an onZoom subscriber; block browser default zoom.
+      if (!onZoom) return
+      event?.preventDefault?.()
+      const next = Math.max(0.1, Math.min(3, Math.round(scale * 100) / 100))
+      onZoom(next)
+    },
+    {
+      target: containerRef,
+      eventOptions: { passive: false },
+      // Start from current zoom
+      from: () => [zoom, 0],
+      scaleBounds: { min: 0.1, max: 3 },
+      pinchOnWheel: false, // don't hijack scroll-wheel; use dedicated buttons instead
+    } as any
+  )
 
   // Track container size
   useEffect(() => {
@@ -159,7 +180,11 @@ export default function Workspace({ layout, selectedId, zoom, showGrid, snap, on
   }, [sheet.widthIn, sheet.lengthIn, scale])
 
   return (
-    <div ref={containerRef} className="relative h-full w-full overflow-auto bg-neutral-950">
+    <div
+      ref={containerRef}
+      className="relative h-full w-full overflow-auto bg-neutral-950"
+      style={{ touchAction: 'pan-x pan-y' }} // allow pan, disable browser pinch-zoom (usePinch handles it)
+    >
       <Stage
         ref={stageRef}
         width={stageW}

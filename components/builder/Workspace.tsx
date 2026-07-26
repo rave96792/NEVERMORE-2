@@ -6,6 +6,9 @@ import type Konva from 'konva'
 import useImage from 'use-image'
 import { SHEETS, CANVAS_PPI, GRID_IN, SNAP_IN, BOUNDARY_MARGIN_IN } from '@/lib/builder/constants'
 import type { ArtworkItem, Layout } from '@/lib/builder/types'
+import { computeSnapGuides, type SnapGuide } from '@/lib/builder/align'
+
+const SNAP_GUIDE_TOL_PX = 4 // snap when within 4 screen pixels
 
 interface Props {
   layout: Layout
@@ -32,6 +35,9 @@ export default function Workspace({ layout, selectedId, zoom, showGrid, snap, on
     | { id: string; xIn: number; yIn: number; widthIn: number; heightIn: number; rotationDeg: number }
     | null
   >(null)
+
+  // Live snap guides while dragging
+  const [snapGuides, setSnapGuides] = useState<SnapGuide[]>([])
 
   // Track container size
   useEffect(() => {
@@ -194,6 +200,8 @@ export default function Workspace({ layout, selectedId, zoom, showGrid, snap, on
             <CanvasArtwork
               key={item.id}
               item={item}
+              allItems={layout.items}
+              sheetSizeId={layout.sheetSizeId}
               sheetWidthIn={sheet.widthIn}
               sheetLengthIn={sheet.lengthIn}
               snapVal={snapVal}
@@ -202,6 +210,24 @@ export default function Workspace({ layout, selectedId, zoom, showGrid, snap, on
               onSelect={() => onSelect(item.id)}
               onUpdate={(patch) => onUpdate(item.id, patch)}
               onLive={setLiveInfo}
+              onSnapGuides={setSnapGuides}
+            />
+          ))}
+
+          {/* Live snap guide lines (magenta, from sheet edge to sheet edge) */}
+          {snapGuides.map((g, i) => (
+            <Line
+              key={`snap-${i}`}
+              points={g.orientation === 'v'
+                ? [g.atIn * CANVAS_PPI, 0, g.atIn * CANVAS_PPI, hPx]
+                : [0, g.atIn * CANVAS_PPI, wPx, g.atIn * CANVAS_PPI]}
+              stroke="#d946ef"
+              strokeWidth={1 / scale}
+              dash={[6 / scale, 4 / scale]}
+              listening={false}
+              shadowColor="#d946ef"
+              shadowBlur={6 / scale}
+              shadowOpacity={0.8}
             />
           ))}
 
@@ -276,6 +302,8 @@ export default function Workspace({ layout, selectedId, zoom, showGrid, snap, on
 
 interface CanvasArtworkProps {
   item: ArtworkItem
+  allItems: ArtworkItem[]
+  sheetSizeId: Layout['sheetSizeId']
   sheetWidthIn: number
   sheetLengthIn: number
   snapVal: (v: number) => number
@@ -284,9 +312,10 @@ interface CanvasArtworkProps {
   onSelect: () => void
   onUpdate: (patch: Partial<ArtworkItem>) => void
   onLive: (info: { id: string; xIn: number; yIn: number; widthIn: number; heightIn: number; rotationDeg: number } | null) => void
+  onSnapGuides: (guides: SnapGuide[]) => void
 }
 
-function CanvasArtwork({ item, sheetWidthIn, sheetLengthIn, snapVal, scale, isSelected, onSelect, onUpdate, onLive }: CanvasArtworkProps) {
+function CanvasArtwork({ item, allItems, sheetSizeId, sheetWidthIn, sheetLengthIn, snapVal, scale, isSelected, onSelect, onUpdate, onLive, onSnapGuides }: CanvasArtworkProps) {
   const [img] = useImage(item.artworkUrl, 'anonymous')
   const shapeRef = useRef<Konva.Image>(null)
 
@@ -320,6 +349,36 @@ function CanvasArtwork({ item, sheetWidthIn, sheetLengthIn, snapVal, scale, isSe
       draggable
       onClick={onSelect}
       onTap={onSelect}
+      dragBoundFunc={(pos) => {
+        // pos is in stage coords. Convert to inches (relative to sheet Layer).
+        // Our Layer already has offsetX/Y and scale, so pos is in Layer-local px * scale + offset.
+        // Konva provides the RAW stage pos; we need to reverse the Layer transform.
+        const stage = shapeRef.current?.getStage()
+        if (!stage) return pos
+        const layerNode = shapeRef.current!.getLayer()!
+        // Convert stage-space -> layer-space:
+        const layerAbs = layerNode.getAbsoluteTransform().copy().invert()
+        const local = layerAbs.point(pos)
+        const xIn = local.x / CANVAS_PPI
+        const yIn = local.y / CANVAS_PPI
+
+        const tolIn = SNAP_GUIDE_TOL_PX / CANVAS_PPI
+        const { xIn: sx, yIn: sy, guides } = computeSnapGuides({
+          drag: { xIn, yIn, widthIn: item.widthIn, heightIn: item.heightIn, id: item.id },
+          others: allItems,
+          sheetSizeId,
+          tolIn,
+        })
+        onSnapGuides(guides)
+
+        // Clamp inside safe margin
+        const cx = Math.max(BOUNDARY_MARGIN_IN, Math.min(sx, sheetWidthIn - BOUNDARY_MARGIN_IN - item.widthIn))
+        const cy = Math.max(BOUNDARY_MARGIN_IN, Math.min(sy, sheetLengthIn - BOUNDARY_MARGIN_IN - item.heightIn))
+
+        // Convert back to stage coords
+        const snapped = layerNode.getAbsoluteTransform().point({ x: cx * CANVAS_PPI, y: cy * CANVAS_PPI })
+        return snapped
+      }}
       onDragStart={() => { onSelect(); emitLive() }}
       onDragMove={() => emitLive()}
       onTransformStart={() => emitLive()}
@@ -333,6 +392,7 @@ function CanvasArtwork({ item, sheetWidthIn, sheetLengthIn, snapVal, scale, isSe
         node.position({ x: clampedX * CANVAS_PPI, y: clampedY * CANVAS_PPI })
         onUpdate({ xIn: clampedX, yIn: clampedY })
         onLive(null)
+        onSnapGuides([])
       }}
       onTransformEnd={() => {
         const node = shapeRef.current

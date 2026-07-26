@@ -15,6 +15,7 @@ import { useAutoSave, loadAutoSaved } from '@/lib/builder/useAutoSave'
 import type { ArtworkItem, LibraryImage } from '@/lib/builder/types'
 import { SHEETS, CANVAS_PPI } from '@/lib/builder/constants'
 import { toast } from 'sonner'
+import { alignToSheet, distributeEvenGap, type AlignAxis, type DistributeAxis } from '@/lib/builder/align'
 
 // Konva must load client-side only
 const Workspace = dynamic(() => import('@/components/builder/Workspace'), { ssr: false })
@@ -37,7 +38,7 @@ function persistLibrary(lib: LibraryImage[]) {
 export default function BuilderClient() {
   // Hydration guard for localStorage
   const [hydrated, setHydrated] = useState(false)
-  const { state, setLayout, setSheet, addItem, updateItem, removeItem, duplicateItem, reorder, select, clear, undo, redo, canUndo, canRedo } =
+  const { state, setLayout, setSheet, addItem, updateItem, setItems, removeItem, duplicateItem, reorder, select, clear, undo, redo, canUndo, canRedo } =
     useLayoutStore(emptyLayout('14x24'))
 
   const [library, setLibrary] = useState<LibraryImage[]>([])
@@ -115,6 +116,26 @@ export default function BuilderClient() {
     if (state.layout.items.length === 0) return
     if (window.confirm('Remove all artwork from this sheet?')) clear()
   }
+
+  // Alignment: single-selection → align that item vs sheet;
+  //            no selection → align ALL items vs sheet.
+  const handleAlign = useCallback((axis: AlignAxis) => {
+    const items = state.layout.items
+    if (items.length === 0) return
+    const target = state.selectedId ? items.filter((it) => it.id === state.selectedId) : items
+    const aligned = alignToSheet(target, axis, state.layout.sheetSizeId)
+    const alignedById = new Map(aligned.map((it) => [it.id, it]))
+    const next = items.map((it) => alignedById.get(it.id) || it)
+    setItems(next)
+  }, [state.layout.items, state.layout.sheetSizeId, state.selectedId, setItems])
+
+  const handleDistribute = useCallback((axis: DistributeAxis) => {
+    const items = state.layout.items
+    if (items.length < 3) { toast.error('Need at least 3 items to distribute'); return }
+    const next = distributeEvenGap(items, axis)
+    setItems(next)
+    toast.success(axis === 'hgap' ? 'Distributed horizontally' : 'Distributed vertically')
+  }, [state.layout.items, setItems])
 
   // Compute fit zoom given container size (leave room for rulers)
   const fitZoom = useMemo(() => {
@@ -195,6 +216,10 @@ export default function BuilderClient() {
             snap={snap}
             onToggleSnap={() => setSnap((v) => !v)}
             onClear={handleClear}
+            onAlign={handleAlign}
+            onDistribute={handleDistribute}
+            itemCount={state.layout.items.length}
+            hasSelection={!!state.selectedId}
           />
           <div className="flex flex-col lg:flex-row flex-1 min-h-[60vh]">
             <div className="flex-1 relative min-h-[50vh]">

@@ -16,6 +16,7 @@ type Action =
   | { type: 'SET_SHEET'; sheetSizeId: SheetSizeId }
   | { type: 'ADD_ITEM'; item: ArtworkItem }
   | { type: 'UPDATE_ITEM'; id: string; patch: Partial<ArtworkItem> }
+  | { type: 'SET_ITEMS'; items: ArtworkItem[] }
   | { type: 'REMOVE_ITEM'; id: string }
   | { type: 'DUPLICATE_ITEM'; id: string }
   | { type: 'REORDER'; id: string; dir: 'front' | 'back' | 'forward' | 'backward' }
@@ -69,6 +70,9 @@ function reducer(state: State, action: Action): State {
     case 'UPDATE_ITEM': {
       const nextItems = state.layout.items.map((it) => (it.id === action.id ? { ...it, ...action.patch } : it))
       return push(commit(state.layout, nextItems))
+    }
+    case 'SET_ITEMS': {
+      return push(commit(state.layout, action.items))
     }
     case 'REMOVE_ITEM': {
       const nextItems = state.layout.items.filter((it) => it.id !== action.id)
@@ -155,6 +159,7 @@ export function useLayoutStore(initial?: Layout) {
       setSheet: (sheetSizeId: SheetSizeId) => dispatch({ type: 'SET_SHEET', sheetSizeId }),
       addItem: (item: ArtworkItem) => dispatch({ type: 'ADD_ITEM', item }),
       updateItem: (id: string, patch: Partial<ArtworkItem>) => dispatch({ type: 'UPDATE_ITEM', id, patch }),
+      setItems: (items: ArtworkItem[]) => dispatch({ type: 'SET_ITEMS', items }),
       removeItem: (id: string) => dispatch({ type: 'REMOVE_ITEM', id }),
       duplicateItem: (id: string) => dispatch({ type: 'DUPLICATE_ITEM', id }),
       reorder: (id: string, dir: 'front' | 'back' | 'forward' | 'backward') => dispatch({ type: 'REORDER', id, dir }),

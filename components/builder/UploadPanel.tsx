@@ -68,7 +68,7 @@ export default function UploadPanel({ library, onAddToLibrary, onRemoveFromLibra
         ref={fileRef}
         type="file"
         multiple
-        accept="image/png,image/jpeg,image/webp"
+        accept="image/png"
         className="hidden"
         onChange={(e) => onFiles(e.target.files)}
         data-testid="b-file-input"
@@ -83,8 +83,8 @@ export default function UploadPanel({ library, onAddToLibrary, onRemoveFromLibra
               className="w-full rounded-lg border-2 border-dashed border-white/15 bg-white/[0.02] hover:bg-white/[0.06] py-3 text-center transition"
             >
               <UploadCloud className="mx-auto h-4 w-4 text-neutral-400 mb-1" />
-              <div className="text-xs text-white">Drop PNG · JPG · WEBP or click to browse</div>
-              <div className="text-[10px] text-neutral-500 mt-0.5">Multi-select supported</div>
+              <div className="text-xs text-white">Drop PNG or click to browse</div>
+              <div className="text-[10px] text-neutral-500 mt-0.5">PNG only · under 25 MB · multi-select supported</div>
             </button>
           ) : (
             <div className="flex flex-wrap items-center gap-2">

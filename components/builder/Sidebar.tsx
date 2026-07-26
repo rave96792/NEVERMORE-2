@@ -1,6 +1,6 @@
 'use client'
 
-import { Trash2, Copy, MoveUp, MoveDown, ArrowUpToLine, ArrowDownToLine, Lock, Unlock, RotateCw } from 'lucide-react'
+import { Trash2, Copy, MoveUp, MoveDown, ArrowUpToLine, ArrowDownToLine, Lock, Unlock, RotateCw, X } from 'lucide-react'
 import type { ArtworkItem, Layout } from '@/lib/builder/types'
 import { itemDpi, bucketColor, bucketLabel } from '@/lib/builder/dpi'
 import { CANVAS_PPI } from '@/lib/builder/constants'
@@ -42,13 +42,22 @@ export default function Sidebar(props: Props) {
           {[...layout.items].sort((a, b) => b.zIndex - a.zIndex).map((it) => (
             <div
               key={it.id}
+              className="group flex items-center gap-2 rounded bg-white/[0.03] hover:bg-white/[0.06] px-2 py-1 text-xs cursor-pointer"
               onClick={() => onUpdate(it.id, {} as any)}
-              className="flex items-center gap-2 rounded bg-white/[0.03] px-2 py-1 text-xs"
             >
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img src={it.artworkUrl} alt="" className="h-5 w-5 object-contain" />
               <span className="flex-1 truncate text-neutral-300">{it.originalName || 'artwork'}</span>
               <span className="text-neutral-500 text-[10px]">{it.widthIn.toFixed(1)}×{it.heightIn.toFixed(1)}"</span>
+              <button
+                onClick={(e) => { e.stopPropagation(); onRemove(it.id) }}
+                className="opacity-0 group-hover:opacity-100 rounded p-0.5 text-neutral-400 hover:text-red-400 hover:bg-red-500/10 transition"
+                title="Delete this artwork"
+                aria-label="Delete"
+                data-testid={`b-layer-del-${it.id}`}
+              >
+                <X className="h-3 w-3" />
+              </button>
             </div>
           ))}
         </div>

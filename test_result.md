@@ -190,12 +190,55 @@ metadata:
 
 test_plan:
   current_focus:
-    - "POST /api/paypal/create-order returns a graceful 503 (not a 500) when Mongo is unreachable"
-    - "GET /api/health surfaces Mongo/PayPal/env status for triage"
-    - "Regression sweep after the fix — other endpoints must still work"
+    - "POST /api/paypal/create-order stamps sequential orderNumber starting at 100 and applies new shipping ($5 HI / $12 std)"
+    - "POST /api/orders/:id/status transitions PROCESSING/SHIPPED and fires buyer status email"
   stuck_tasks: []
   test_all: false
-  test_priority: "stuck_first"
+  test_priority: "high_first"
+
+agent_communication:
+    - agent: "main"
+      message: |
+        NEW BATCH: 6 user feature requests deployed. Please test the two NEW backend endpoints listed under
+        current_focus. Do NOT re-test earlier already-green endpoints unless explicitly needed.
+
+        Base URL for testing: https://www.nevermoredtf.com (Vercel prod, after the push completes)
+        Local fallback if prod deploy is still building: http://localhost:3000 inside container.
+
+        Required env for admin endpoint: ADMIN_TOKEN (present in /app/.env)
+
+        1. **Sequential orderNumber + region shipping** — POST /api/paypal/create-order
+             Body (HI):     items:[{sheetId:'14x36',quantity:1}], shipping:{state:'HI', country:'US', ...}
+             Body (non-HI): items:[{sheetId:'14x24',quantity:2}], shipping:{state:'CA', country:'US', ...}
+             Expect: 201 with {orderID,internalOrderId,orderNumber,totals}
+                 - orderNumber must be an integer >= 100 and STRICTLY INCREASING between calls.
+                 - HI totals.shipping === 5, non-HI totals.shipping === 12.
+                 - HI totals.taxRate ≈ 0.04712 and totals.taxState === 'HI'.
+                 - non-HI totals.tax === 0.
+             Also: same invalid-payload cases as before must still return 400 (bad email, empty items, unknown sheetId).
+
+        2. **Admin order status endpoint** — POST /api/orders/:id/status
+             Use the internalOrderId returned above.
+             (a) No token         → 401 {error:'Unauthorized'}
+             (b) Wrong status     → 400 {error:'status must be PROCESSING or SHIPPED'}
+             (c) PROCESSING       → 200 {ok:true,status:'PROCESSING',email:{...}}
+                  (email.ok may be false with a validation error if buyer email is a placeholder — that's fine, do
+                  NOT flag it as a failure. Just verify the transition itself succeeded in Mongo.)
+             (d) SHIPPED with trackingNumber+carrier → 200, order doc now has status=SHIPPED, trackingNumber, carrier.
+
+             Header format: "x-admin-token: <ADMIN_TOKEN>". Also accepts body.adminToken.
+
+        3. Regression sanity (must still return the same shape as before):
+             - GET /api/pricing (9 sheets present)
+             - POST /api/pricing/quote {sheetId:'14x60'} → unitPrice:26
+             - POST /api/cart/validate rejects tampered unitPrice
+             - GET /api/uploads/<known-uuid>.png returns image/png
+
+        Do NOT touch frontend. Backend only.
+        After you finish, update the two tasks' status_history with agent:"testing".
+
+test_plan_legacy:
+  current_focus:
 
 agent_communication:
     - agent: "main"
@@ -282,6 +325,42 @@ agent_communication:
         **NO REGRESSIONS** - all previously working endpoints still working correctly.
         
         All three tasks marked as working=true, needs_retesting=false. The PayPal checkout bug is FIXED.
+
+user_problem_statement: |
+  Latest batch of feature requests from user (June 2025):
+    1. Region-based shipping: $5 flat to HI, $12 flat everywhere else.
+    2. Sequential customer-facing order number starting at #100 (monotonically increments).
+    3. Cost breakdown visible pre-payment (subtotal / shipping / tax / total) — already on /checkout.
+    4. Buyer confirmation email on capture (already wired via sendOrderEmails).
+    5. Admin-triggered order status emails: PROCESSING (in production) and SHIPPED (with tracking).
+    6. Enforce PNG-only, <25 MB in the builder uploader UI + backend.
+    7. Delete-single-image button in the builder's Layers list.
+  Also fixed a syntax error in /api/paypal/create-order (duplicate return block from prior session).
+
+backend:
+  - task: "POST /api/paypal/create-order stamps sequential orderNumber starting at 100 and applies new shipping ($5 HI / $12 std)"
+    implemented: true
+    working: "NA"
+    file: "app/api/[[...path]]/route.js, lib/pricing.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "Locally verified: HI order returns shipping=$5 + tax 4.712%; non-HI returns shipping=$12 + tax=0. Sequential counter tested: 100 → 101 → 102 across three successive create-order calls (uses Mongo counters collection with $inc via aggregation pipeline). Also fixed a JS syntax error (a duplicate return block from prior session) that would have failed the Vercel build. Needs prod verification after next Vercel deploy."
+
+  - task: "POST /api/orders/:id/status transitions PROCESSING/SHIPPED and fires buyer status email"
+    implemented: true
+    working: "NA"
+    file: "app/api/[[...path]]/route.js, lib/email.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "Locally verified: unauth call → 401; wrong status → 400; PROCESSING and SHIPPED (with trackingNumber + carrier) → 200 {ok:true} and calls sendStatusEmail (Resend rejects buyer@example.com — expected in test). Admin auth via x-admin-token header OR body.adminToken. Needs prod verification with a real buyer email."
 
 user_problem_statement: |
   Nevermore DTF Next.js site. Cart, PayPal sandbox checkout, MongoDB order persistence,

@@ -62,11 +62,11 @@ export default function BuilderClient() {
   const addToLibrary = useCallback(async (files: FileList | File[]) => {
     const arr = Array.from(files).slice(0, 20)
     for (const file of arr) {
-      if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) {
-        toast.error(`${file.name}: unsupported type`); continue
+      if (file.type !== 'image/png') {
+        toast.error(`${file.name}: PNG only`); continue
       }
       if (file.size > 25 * 1024 * 1024) {
-        toast.error(`${file.name}: over 25MB`); continue
+        toast.error(`${file.name}: must be under 25 MB`); continue
       }
       try {
         const fd = new FormData(); fd.append('file', file)

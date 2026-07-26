@@ -179,28 +179,37 @@ async function handleRoute(request, { params }) {
         return handleCORS(NextResponse.json({ error: e.message }, { status: 502 }))
       }
 
-      // 4. Persist a pending order
-      const database = await connectToMongo()
-      await database.collection('orders').insertOne({
-        id: internalOrderId,
-        paypalOrderId: paypalOrder.id,
-        status: 'PENDING',
-        items: cartRes.items,
-        subtotal: totals.subtotal,
-        shipping_amount: totals.shipping,
-        tax: totals.tax,
-        taxRate: totals.taxRate,
-        taxState: totals.taxState,
-        total: totals.total,
-        currency: 'USD',
-        shipping: {
-          fullName: s.fullName, email: s.email, phone: s.phone || null,
-          line1: s.line1, line2: s.line2 || null, city: s.city, state: s.state,
-          postalCode: s.postalCode, country: s.country,
-        },
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      })
+      // 4. Persist a pending order (Mongo failure is a hard-stop: we don't want
+      //    a PayPal-paid order that we lost track of)
+      try {
+        const database = await connectToMongo()
+        await database.collection('orders').insertOne({
+          id: internalOrderId,
+          paypalOrderId: paypalOrder.id,
+          status: 'PENDING',
+          items: cartRes.items,
+          subtotal: totals.subtotal,
+          shipping_amount: totals.shipping,
+          tax: totals.tax,
+          taxRate: totals.taxRate,
+          taxState: totals.taxState,
+          total: totals.total,
+          currency: 'USD',
+          shipping: {
+            fullName: s.fullName, email: s.email, phone: s.phone || null,
+            line1: s.line1, line2: s.line2 || null, city: s.city, state: s.state,
+            postalCode: s.postalCode, country: s.country,
+          },
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        })
+      } catch (e) {
+        console.error('[create-order] mongo insert failed:', e?.message)
+        return handleCORS(NextResponse.json({
+          error: 'Order database is temporarily unavailable. Please try again in a minute.',
+          detail: 'db_unavailable',
+        }, { status: 503 }))
+      }
 
       return handleCORS(NextResponse.json({
         orderID: paypalOrder.id,

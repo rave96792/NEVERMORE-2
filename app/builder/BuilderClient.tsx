@@ -16,6 +16,7 @@ import type { ArtworkItem, LibraryImage } from '@/lib/builder/types'
 import { SHEETS, CANVAS_PPI } from '@/lib/builder/constants'
 import { toast } from 'sonner'
 import { alignToSheet, distributeEvenGap, type AlignAxis, type DistributeAxis } from '@/lib/builder/align'
+import { autoArrange } from '@/lib/builder/pack'
 
 // Konva must load client-side only
 const Workspace = dynamic(() => import('@/components/builder/Workspace'), { ssr: false })
@@ -137,6 +138,24 @@ export default function BuilderClient() {
     toast.success(axis === 'hgap' ? 'Distributed horizontally' : 'Distributed vertically')
   }, [state.layout.items, setItems])
 
+  const handleAutoArrange = useCallback(() => {
+    const items = state.layout.items
+    if (items.length === 0) return
+    const result = autoArrange(items, state.layout.sheetSizeId)
+    const byId = new Map(result.placements.map((p) => [p.id, p]))
+    const next = items.map((it) => {
+      const p = byId.get(it.id)
+      if (!p) return it
+      return { ...it, xIn: p.xIn, yIn: p.yIn, widthIn: p.widthIn, heightIn: p.heightIn, rotationDeg: p.rotationDeg }
+    })
+    setItems(next)
+    if (result.ok) {
+      toast.success(`Auto-arranged ${items.length} item${items.length === 1 ? '' : 's'} · ${result.usedHeightIn.toFixed(1)}″ used · Ctrl+Z to undo`)
+    } else {
+      toast.error(`Overflow: needs ${result.overflowIn.toFixed(1)}″ more sheet length. Try a longer sheet size.`)
+    }
+  }, [state.layout.items, state.layout.sheetSizeId, setItems])
+
   // Compute fit zoom given container size (leave room for rulers)
   const fitZoom = useMemo(() => {
     const sheet = SHEETS[state.layout.sheetSizeId]
@@ -218,6 +237,7 @@ export default function BuilderClient() {
             onClear={handleClear}
             onAlign={handleAlign}
             onDistribute={handleDistribute}
+            onAutoArrange={handleAutoArrange}
             itemCount={state.layout.items.length}
             hasSelection={!!state.selectedId}
           />

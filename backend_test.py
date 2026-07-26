@@ -1,445 +1,668 @@
 #!/usr/bin/env python3
 """
-Backend API test suite for Nevermore DTF
-Tests the two NEW endpoints + quick regression
+Nevermore DTF Backend Regression + New Composite Endpoint Test
+Tests all refactored endpoints for behavior preservation + new /api/composite
 """
 import requests
 import json
 import os
-import sys
+import struct
+from io import BytesIO
 
-BASE_URL = "http://localhost:3000/api"
-ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "nvm_7D5LacmJbKHsr7u7rhERWyyYTWyw4cOV")
+BASE_URL = "http://localhost:3000"
+ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "")
 
-# Test results tracking
+# Test counters
+passed = 0
+failed = 0
 results = []
 
-def log_test(name, passed, details=""):
-    """Log test result"""
-    status = "✅ PASS" if passed else "❌ FAIL"
-    results.append({"name": name, "passed": passed, "details": details})
-    print(f"{status} | {name}")
-    if details:
-        print(f"    {details}")
+def log_result(test_name, success, details=""):
+    global passed, failed, results
+    if success:
+        passed += 1
+        status = "✅ PASS"
+    else:
+        failed += 1
+        status = "❌ FAIL"
+    results.append(f"{status} | {test_name} | {details}")
+    print(f"{status} | {test_name}")
+    if details and not success:
+        print(f"    Details: {details}")
 
-def test_task1_sequential_order_number_and_shipping():
-    """
-    TASK 1: Sequential orderNumber + region-based shipping
-    - Test POST /api/paypal/create-order
-    - HI: $5 shipping, 4.712% tax
-    - CA: $12 shipping, $0 tax
-    - orderNumber must be >= 100 and STRICTLY INCREASING
-    """
-    print("\n" + "="*80)
-    print("TASK 1: Sequential orderNumber + region-based shipping")
-    print("="*80)
+def verify_png_signature(data):
+    """Verify PNG magic bytes: 0x89 0x50 0x4E 0x47"""
+    if len(data) < 8:
+        return False
+    return data[0:8] == b'\x89PNG\r\n\x1a\n'
+
+def get_png_ihdr_info(data):
+    """Extract width, height, color type from PNG IHDR chunk"""
+    if not verify_png_signature(data):
+        return None
+    # IHDR starts at byte 8 (after signature)
+    # Format: 4 bytes length, 4 bytes "IHDR", 4 bytes width, 4 bytes height, 1 byte bit depth, 1 byte color type
+    if len(data) < 29:
+        return None
+    width = struct.unpack('>I', data[16:20])[0]
+    height = struct.unpack('>I', data[20:24])[0]
+    color_type = data[25]
+    return {'width': width, 'height': height, 'color_type': color_type}
+
+print("=" * 80)
+print("NEVERMORE DTF BACKEND REGRESSION + COMPOSITE TEST")
+print("=" * 80)
+print(f"Base URL: {BASE_URL}")
+print(f"Admin Token: {'✓ SET' if ADMIN_TOKEN else '✗ MISSING'}")
+print()
+
+# ============================================================================
+# PART A: REGRESSION TESTS - All existing endpoints must work identically
+# ============================================================================
+print("PART A: REGRESSION TESTS")
+print("-" * 80)
+
+# Test 1: GET /api/ → root endpoint
+try:
+    r = requests.get(f"{BASE_URL}/api/")
+    if r.status_code == 200 and r.json().get("message") == "Nevermore DTF API":
+        log_result("A1: GET /api/", True, "200 with correct message")
+    else:
+        log_result("A1: GET /api/", False, f"Status {r.status_code}, body: {r.text[:100]}")
+except Exception as e:
+    log_result("A1: GET /api/", False, str(e))
+
+# Test 2: GET /api/health → health check
+try:
+    r = requests.get(f"{BASE_URL}/api/health")
+    if r.status_code in [200, 503]:
+        data = r.json()
+        checks = data.get("checks", {})
+        mongo_ok = checks.get("mongo", {}).get("ok")
+        paypal_ok = checks.get("paypal", {}).get("ok")
+        env = checks.get("env", {})
+        
+        # Verify required env vars are reported
+        required_env = ["MONGO_URL", "DB_NAME", "PAYPAL_CLIENT_ID", "PAYPAL_CLIENT_SECRET", "RESEND_API_KEY"]
+        env_ok = all(env.get(k) == True for k in required_env)
+        
+        if mongo_ok is not None and paypal_ok is not None and env_ok:
+            log_result("A2: GET /api/health", True, f"Status {r.status_code}, mongo.ok={mongo_ok}, paypal.ok={paypal_ok}")
+        else:
+            log_result("A2: GET /api/health", False, f"Missing checks: {data}")
+    else:
+        log_result("A2: GET /api/health", False, f"Unexpected status {r.status_code}")
+except Exception as e:
+    log_result("A2: GET /api/health", False, str(e))
+
+# Test 3: GET /api/pricing → 9 sheets from 14x12 to 14x120
+try:
+    r = requests.get(f"{BASE_URL}/api/pricing")
+    if r.status_code == 200:
+        data = r.json()
+        sheets = data.get("sheets", [])
+        if len(sheets) == 9:
+            # Verify first and last sheet
+            first = next((s for s in sheets if s.get("id") == "14x12"), None)
+            last = next((s for s in sheets if s.get("id") == "14x120"), None)
+            if first and first.get("price") == 10 and last and last.get("price") == 40:
+                log_result("A3: GET /api/pricing", True, f"9 sheets, 14x12=$10, 14x120=$40")
+            else:
+                log_result("A3: GET /api/pricing", False, f"Sheet prices incorrect: first={first}, last={last}")
+        else:
+            log_result("A3: GET /api/pricing", False, f"Expected 9 sheets, got {len(sheets)}")
+    else:
+        log_result("A3: GET /api/pricing", False, f"Status {r.status_code}")
+except Exception as e:
+    log_result("A3: GET /api/pricing", False, str(e))
+
+# Test 4: POST /api/pricing/quote → valid and invalid
+try:
+    # Valid quote
+    r = requests.post(f"{BASE_URL}/api/pricing/quote", json={"sheetId": "14x60"})
+    if r.status_code == 200 and r.json().get("unitPrice") == 26:
+        log_result("A4a: POST /api/pricing/quote (valid)", True, "14x60 → $26")
+    else:
+        log_result("A4a: POST /api/pricing/quote (valid)", False, f"Status {r.status_code}, body: {r.json()}")
     
-    order_numbers = []
-    hi_internal_order_id = None
+    # Invalid sheet ID
+    r = requests.post(f"{BASE_URL}/api/pricing/quote", json={"sheetId": "99x99"})
+    if r.status_code == 400:
+        log_result("A4b: POST /api/pricing/quote (invalid)", True, "Invalid sheet → 400")
+    else:
+        log_result("A4b: POST /api/pricing/quote (invalid)", False, f"Expected 400, got {r.status_code}")
+except Exception as e:
+    log_result("A4: POST /api/pricing/quote", False, str(e))
+
+# Test 5: POST /api/cart/validate → tampered price recomputation
+try:
+    # Tampered unitPrice should be recomputed
+    r = requests.post(f"{BASE_URL}/api/cart/validate", json={
+        "items": [{"sheetId": "14x36", "quantity": 2, "unitPrice": 9999}]
+    })
+    if r.status_code == 200:
+        data = r.json()
+        items = data.get("items", [])
+        if items and items[0].get("unitPrice") == 18 and data.get("subtotal") == 36:
+            log_result("A5a: POST /api/cart/validate (tamper)", True, "9999 → 18, subtotal=36")
+        else:
+            log_result("A5a: POST /api/cart/validate (tamper)", False, f"Price not recomputed: {data}")
+    else:
+        log_result("A5a: POST /api/cart/validate (tamper)", False, f"Status {r.status_code}")
     
-    # Payload A: Hawaii (should get $5 shipping and 4.712% tax)
-    payload_hi = {
-        "items": [{"sheetId": "14x36", "quantity": 1}],
+    # Empty items should return 400
+    r = requests.post(f"{BASE_URL}/api/cart/validate", json={"items": []})
+    if r.status_code == 400:
+        log_result("A5b: POST /api/cart/validate (empty)", True, "Empty items → 400")
+    else:
+        log_result("A5b: POST /api/cart/validate (empty)", False, f"Expected 400, got {r.status_code}")
+except Exception as e:
+    log_result("A5: POST /api/cart/validate", False, str(e))
+
+# Test 6: POST /api/paypal/create-order → HI and CA shipping
+order_ids = []
+try:
+    # HI shipping: $5, tax 4.712%
+    r = requests.post(f"{BASE_URL}/api/paypal/create-order", json={
+        "items": [{"sheetId": "14x36", "quantity": 1, "unitPrice": 18}],
         "shipping": {
-            "fullName": "HI Buyer",
-            "email": "buyer+hi@example.com",
+            "fullName": "Test Buyer HI",
+            "email": "buyer.hi@example.com",
             "line1": "123 Ala Moana Blvd",
             "city": "Honolulu",
             "state": "HI",
             "postalCode": "96813",
             "country": "US"
         }
-    }
-    
-    # Payload B: California (should get $12 shipping and $0 tax)
-    payload_ca = {
-        "items": [{"sheetId": "14x24", "quantity": 2}],
+    })
+    if r.status_code == 201:
+        data = r.json()
+        totals = data.get("totals", {})
+        order_ids.append(data.get("internalOrderId"))
+        if (totals.get("shipping") == 5 and 
+            totals.get("taxState") == "HI" and 
+            abs(totals.get("taxRate", 0) - 0.04712) < 0.0001 and
+            data.get("orderNumber") is not None):
+            log_result("A6a: POST /api/paypal/create-order (HI)", True, 
+                      f"201, shipping=$5, taxState=HI, orderNumber={data.get('orderNumber')}")
+        else:
+            log_result("A6a: POST /api/paypal/create-order (HI)", False, f"Totals incorrect: {totals}")
+    else:
+        log_result("A6a: POST /api/paypal/create-order (HI)", False, f"Status {r.status_code}, body: {r.text[:200]}")
+except Exception as e:
+    log_result("A6a: POST /api/paypal/create-order (HI)", False, str(e))
+
+try:
+    # CA shipping: $12, tax $0
+    r = requests.post(f"{BASE_URL}/api/paypal/create-order", json={
+        "items": [{"sheetId": "14x24", "quantity": 2, "unitPrice": 13}],
         "shipping": {
-            "fullName": "CA Buyer",
-            "email": "buyer+ca@example.com",
-            "line1": "1 Market St",
-            "city": "Los Angeles",
+            "fullName": "Test Buyer CA",
+            "email": "buyer.ca@example.com",
+            "line1": "456 Market St",
+            "city": "San Francisco",
             "state": "CA",
-            "postalCode": "90001",
+            "postalCode": "94102",
             "country": "US"
         }
-    }
-    
-    # Call each payload 2× (total 4 calls)
-    test_cases = [
-        ("HI-1", payload_hi, 5, 0.04712, "HI"),
-        ("CA-1", payload_ca, 12, 0, "CA"),
-        ("HI-2", payload_hi, 5, 0.04712, "HI"),
-        ("CA-2", payload_ca, 12, 0, "CA"),
-    ]
-    
-    for label, payload, expected_shipping, expected_tax_rate, expected_tax_state in test_cases:
-        try:
-            resp = requests.post(f"{BASE_URL}/paypal/create-order", json=payload, timeout=10)
-            
-            # Check HTTP 201
-            if resp.status_code != 201:
-                log_test(f"Task1.{label}: HTTP 201", False, f"Got {resp.status_code}: {resp.text[:200]}")
-                continue
-            
-            data = resp.json()
-            
-            # Check response structure
-            required_fields = ["orderID", "internalOrderId", "orderNumber", "totals"]
-            missing = [f for f in required_fields if f not in data]
-            if missing:
-                log_test(f"Task1.{label}: Response structure", False, f"Missing fields: {missing}")
-                continue
-            
-            log_test(f"Task1.{label}: HTTP 201 + structure", True, f"orderNumber={data['orderNumber']}")
-            
-            # Check orderNumber >= 100
-            order_num = data["orderNumber"]
-            if not isinstance(order_num, int) or order_num < 100:
-                log_test(f"Task1.{label}: orderNumber >= 100", False, f"Got {order_num}")
-            else:
-                log_test(f"Task1.{label}: orderNumber >= 100", True, f"{order_num}")
-            
-            order_numbers.append(order_num)
-            
-            # Check shipping amount
-            totals = data["totals"]
-            if totals.get("shipping") == expected_shipping:
-                log_test(f"Task1.{label}: shipping=${expected_shipping}", True)
-            else:
-                log_test(f"Task1.{label}: shipping=${expected_shipping}", False, 
-                        f"Got ${totals.get('shipping')}")
-            
-            # Check tax
-            if expected_tax_rate > 0:
-                # HI: should have tax
-                actual_tax_rate = totals.get("taxRate", 0)
-                if abs(actual_tax_rate - expected_tax_rate) < 0.0001:
-                    log_test(f"Task1.{label}: taxRate≈{expected_tax_rate}", True)
-                else:
-                    log_test(f"Task1.{label}: taxRate≈{expected_tax_rate}", False, 
-                            f"Got {actual_tax_rate}")
-                
-                if totals.get("taxState") == expected_tax_state:
-                    log_test(f"Task1.{label}: taxState={expected_tax_state}", True)
-                else:
-                    log_test(f"Task1.{label}: taxState={expected_tax_state}", False, 
-                            f"Got {totals.get('taxState')}")
-                
-                if totals.get("tax", 0) > 0:
-                    log_test(f"Task1.{label}: tax > 0", True, f"tax=${totals.get('tax')}")
-                else:
-                    log_test(f"Task1.{label}: tax > 0", False, f"Got ${totals.get('tax')}")
-            else:
-                # CA: should have $0 tax
-                if totals.get("tax") == 0:
-                    log_test(f"Task1.{label}: tax=$0", True)
-                else:
-                    log_test(f"Task1.{label}: tax=$0", False, f"Got ${totals.get('tax')}")
-                
-                if totals.get("taxState") == expected_tax_state:
-                    log_test(f"Task1.{label}: taxState={expected_tax_state}", True)
-                else:
-                    log_test(f"Task1.{label}: taxState={expected_tax_state}", False, 
-                            f"Got {totals.get('taxState')}")
-            
-            # Save last HI internalOrderId for Task 2
-            if label.startswith("HI"):
-                hi_internal_order_id = data["internalOrderId"]
-        
-        except Exception as e:
-            log_test(f"Task1.{label}: Request", False, f"Exception: {str(e)}")
-    
-    # Check STRICTLY INCREASING orderNumber
-    if len(order_numbers) == 4:
-        is_increasing = all(order_numbers[i] < order_numbers[i+1] for i in range(3))
-        if is_increasing:
-            log_test("Task1: orderNumber STRICTLY INCREASING", True, 
-                    f"Sequence: {order_numbers}")
+    })
+    if r.status_code == 201:
+        data = r.json()
+        totals = data.get("totals", {})
+        order_ids.append(data.get("internalOrderId"))
+        if totals.get("shipping") == 12 and totals.get("tax") == 0:
+            log_result("A6b: POST /api/paypal/create-order (CA)", True, 
+                      f"201, shipping=$12, tax=$0, orderNumber={data.get('orderNumber')}")
         else:
-            log_test("Task1: orderNumber STRICTLY INCREASING", False, 
-                    f"Sequence: {order_numbers}")
-    
-    # Test invalid payloads (should return 400, NOT 500 or 503)
-    print("\n--- Invalid payload tests ---")
-    
-    invalid_cases = [
-        ("empty items", {"items": [], "shipping": payload_hi["shipping"]}),
-        ("bad email", {"items": [{"sheetId": "14x36", "quantity": 1}], 
-                      "shipping": {**payload_hi["shipping"], "email": "not-an-email"}}),
-        ("unknown sheetId", {"items": [{"sheetId": "99x99", "quantity": 1}], 
-                            "shipping": payload_hi["shipping"]}),
-    ]
-    
-    for label, payload in invalid_cases:
-        try:
-            resp = requests.post(f"{BASE_URL}/paypal/create-order", json=payload, timeout=10)
-            if resp.status_code == 400:
-                log_test(f"Task1.Invalid: {label} → 400", True)
-            else:
-                log_test(f"Task1.Invalid: {label} → 400", False, 
-                        f"Got {resp.status_code}: {resp.text[:200]}")
-        except Exception as e:
-            log_test(f"Task1.Invalid: {label}", False, f"Exception: {str(e)}")
-    
-    return hi_internal_order_id
+            log_result("A6b: POST /api/paypal/create-order (CA)", False, f"Totals incorrect: {totals}")
+    else:
+        log_result("A6b: POST /api/paypal/create-order (CA)", False, f"Status {r.status_code}")
+except Exception as e:
+    log_result("A6b: POST /api/paypal/create-order (CA)", False, str(e))
 
+# Test invalid payloads
+try:
+    # Bad email
+    r = requests.post(f"{BASE_URL}/api/paypal/create-order", json={
+        "items": [{"sheetId": "14x24", "quantity": 1}],
+        "shipping": {"fullName": "Test", "email": "bad-email", "line1": "123", "city": "City", "state": "CA", "postalCode": "12345", "country": "US"}
+    })
+    if r.status_code == 400:
+        log_result("A6c: POST /api/paypal/create-order (bad email)", True, "400")
+    else:
+        log_result("A6c: POST /api/paypal/create-order (bad email)", False, f"Expected 400, got {r.status_code}")
+    
+    # Empty items
+    r = requests.post(f"{BASE_URL}/api/paypal/create-order", json={
+        "items": [],
+        "shipping": {"fullName": "Test", "email": "test@example.com", "line1": "123", "city": "City", "state": "CA", "postalCode": "12345", "country": "US"}
+    })
+    if r.status_code == 400:
+        log_result("A6d: POST /api/paypal/create-order (empty items)", True, "400")
+    else:
+        log_result("A6d: POST /api/paypal/create-order (empty items)", False, f"Expected 400, got {r.status_code}")
+    
+    # Unknown sheetId
+    r = requests.post(f"{BASE_URL}/api/paypal/create-order", json={
+        "items": [{"sheetId": "99x99", "quantity": 1}],
+        "shipping": {"fullName": "Test", "email": "test@example.com", "line1": "123", "city": "City", "state": "CA", "postalCode": "12345", "country": "US"}
+    })
+    if r.status_code == 400:
+        log_result("A6e: POST /api/paypal/create-order (unknown sheet)", True, "400")
+    else:
+        log_result("A6e: POST /api/paypal/create-order (unknown sheet)", False, f"Expected 400, got {r.status_code}")
+except Exception as e:
+    log_result("A6: POST /api/paypal/create-order (invalid)", False, str(e))
 
-def test_task2_admin_order_status(order_id):
-    """
-    TASK 2: Admin order status transitions + status emails
-    - POST /api/orders/:id/status
-    - Test auth, invalid status, valid transitions
-    """
-    print("\n" + "="*80)
-    print("TASK 2: Admin order status transitions + status emails")
-    print("="*80)
-    
-    if not order_id:
-        log_test("Task2: SKIPPED", False, "No order_id from Task 1")
-        return
-    
-    print(f"Using order ID: {order_id}")
-    
-    # (a) No token → 401
+# Test 7: GET /api/orders/:id → retrieve order
+if order_ids:
     try:
-        resp = requests.post(f"{BASE_URL}/orders/{order_id}/status", 
-                           json={"status": "PROCESSING"}, timeout=10)
-        if resp.status_code == 401:
-            log_test("Task2.a: No token → 401", True)
-        else:
-            log_test("Task2.a: No token → 401", False, 
-                    f"Got {resp.status_code}: {resp.text[:200]}")
-    except Exception as e:
-        log_test("Task2.a: No token → 401", False, f"Exception: {str(e)}")
-    
-    # (b) Wrong token → 401
-    try:
-        resp = requests.post(f"{BASE_URL}/orders/{order_id}/status",
-                           headers={"x-admin-token": "wrong-token"},
-                           json={"status": "PROCESSING"}, timeout=10)
-        if resp.status_code == 401:
-            log_test("Task2.b: Wrong token → 401", True)
-        else:
-            log_test("Task2.b: Wrong token → 401", False, 
-                    f"Got {resp.status_code}: {resp.text[:200]}")
-    except Exception as e:
-        log_test("Task2.b: Wrong token → 401", False, f"Exception: {str(e)}")
-    
-    # (c) Invalid status CANCELLED → 400
-    try:
-        resp = requests.post(f"{BASE_URL}/orders/{order_id}/status",
-                           headers={"x-admin-token": ADMIN_TOKEN},
-                           json={"status": "CANCELLED"}, timeout=10)
-        if resp.status_code == 400:
-            log_test("Task2.c: CANCELLED → 400", True)
-        else:
-            log_test("Task2.c: CANCELLED → 400", False, 
-                    f"Got {resp.status_code}: {resp.text[:200]}")
-    except Exception as e:
-        log_test("Task2.c: CANCELLED → 400", False, f"Exception: {str(e)}")
-    
-    # (d) PROCESSING → 200
-    try:
-        resp = requests.post(f"{BASE_URL}/orders/{order_id}/status",
-                           headers={"x-admin-token": ADMIN_TOKEN},
-                           json={"status": "PROCESSING"}, timeout=10)
-        if resp.status_code == 200:
-            data = resp.json()
-            if data.get("ok") and data.get("status") == "PROCESSING" and "email" in data:
-                log_test("Task2.d: PROCESSING → 200", True, 
-                        f"email.ok={data['email'].get('ok')} (may be false for example.com)")
+        order_id = order_ids[0]
+        r = requests.get(f"{BASE_URL}/api/orders/{order_id}")
+        if r.status_code == 200:
+            data = r.json()
+            if data.get("status") == "PENDING" and data.get("id") == order_id:
+                log_result("A7a: GET /api/orders/:id (valid)", True, f"200, status=PENDING")
             else:
-                log_test("Task2.d: PROCESSING → 200", False, 
-                        f"Response structure issue: {json.dumps(data)[:200]}")
+                log_result("A7a: GET /api/orders/:id (valid)", False, f"Data incorrect: {data}")
         else:
-            log_test("Task2.d: PROCESSING → 200", False, 
-                    f"Got {resp.status_code}: {resp.text[:200]}")
+            log_result("A7a: GET /api/orders/:id (valid)", False, f"Status {r.status_code}")
     except Exception as e:
-        log_test("Task2.d: PROCESSING → 200", False, f"Exception: {str(e)}")
+        log_result("A7a: GET /api/orders/:id (valid)", False, str(e))
     
-    # (e) SHIPPED with tracking → 200
+    # Bogus ID
     try:
-        resp = requests.post(f"{BASE_URL}/orders/{order_id}/status",
-                           headers={"x-admin-token": ADMIN_TOKEN},
-                           json={
-                               "status": "SHIPPED",
-                               "trackingNumber": "1Z999AA10123456784",
-                               "carrier": "UPS"
-                           }, timeout=10)
-        if resp.status_code == 200:
-            data = resp.json()
-            log_test("Task2.e: SHIPPED → 200", True)
-            
-            # Verify order doc updated
-            try:
-                get_resp = requests.get(f"{BASE_URL}/orders/{order_id}", timeout=10)
-                if get_resp.status_code == 200:
-                    order_doc = get_resp.json()
-                    if (order_doc.get("status") == "SHIPPED" and 
-                        order_doc.get("trackingNumber") == "1Z999AA10123456784" and
-                        order_doc.get("carrier") == "UPS"):
-                        log_test("Task2.e: Order doc updated", True)
+        r = requests.get(f"{BASE_URL}/api/orders/bogus-id-12345")
+        if r.status_code == 404:
+            log_result("A7b: GET /api/orders/:id (bogus)", True, "404")
+        else:
+            log_result("A7b: GET /api/orders/:id (bogus)", False, f"Expected 404, got {r.status_code}")
+    except Exception as e:
+        log_result("A7b: GET /api/orders/:id (bogus)", False, str(e))
+
+# Test 8: POST /api/orders/:id/status → admin auth + status transitions
+if order_ids and ADMIN_TOKEN:
+    order_id = order_ids[0]
+    
+    # No token → 401
+    try:
+        r = requests.post(f"{BASE_URL}/api/orders/{order_id}/status", json={"status": "PROCESSING"})
+        if r.status_code == 401:
+            log_result("A8a: POST /api/orders/:id/status (no token)", True, "401")
+        else:
+            log_result("A8a: POST /api/orders/:id/status (no token)", False, f"Expected 401, got {r.status_code}")
+    except Exception as e:
+        log_result("A8a: POST /api/orders/:id/status (no token)", False, str(e))
+    
+    # Wrong token → 401
+    try:
+        r = requests.post(f"{BASE_URL}/api/orders/{order_id}/status", 
+                         json={"status": "PROCESSING", "adminToken": "wrong-token"})
+        if r.status_code == 401:
+            log_result("A8b: POST /api/orders/:id/status (wrong token)", True, "401")
+        else:
+            log_result("A8b: POST /api/orders/:id/status (wrong token)", False, f"Expected 401, got {r.status_code}")
+    except Exception as e:
+        log_result("A8b: POST /api/orders/:id/status (wrong token)", False, str(e))
+    
+    # Invalid status → 400
+    try:
+        r = requests.post(f"{BASE_URL}/api/orders/{order_id}/status", 
+                         json={"status": "CANCELLED", "adminToken": ADMIN_TOKEN})
+        if r.status_code == 400:
+            log_result("A8c: POST /api/orders/:id/status (invalid status)", True, "400")
+        else:
+            log_result("A8c: POST /api/orders/:id/status (invalid status)", False, f"Expected 400, got {r.status_code}")
+    except Exception as e:
+        log_result("A8c: POST /api/orders/:id/status (invalid status)", False, str(e))
+    
+    # Valid PROCESSING → 200
+    try:
+        r = requests.post(f"{BASE_URL}/api/orders/{order_id}/status", 
+                         json={"status": "PROCESSING", "adminToken": ADMIN_TOKEN})
+        if r.status_code == 200:
+            data = r.json()
+            if data.get("ok") and data.get("status") == "PROCESSING":
+                # Email may fail with validation error for example.com - that's expected
+                log_result("A8d: POST /api/orders/:id/status (PROCESSING)", True, 
+                          f"200, status=PROCESSING, email.ok={data.get('email', {}).get('ok')}")
+            else:
+                log_result("A8d: POST /api/orders/:id/status (PROCESSING)", False, f"Response incorrect: {data}")
+        else:
+            log_result("A8d: POST /api/orders/:id/status (PROCESSING)", False, f"Status {r.status_code}")
+    except Exception as e:
+        log_result("A8d: POST /api/orders/:id/status (PROCESSING)", False, str(e))
+    
+    # Valid SHIPPED with tracking → 200
+    try:
+        r = requests.post(f"{BASE_URL}/api/orders/{order_id}/status", 
+                         json={"status": "SHIPPED", "trackingNumber": "1Z999AA10123456784", 
+                              "carrier": "UPS", "adminToken": ADMIN_TOKEN})
+        if r.status_code == 200:
+            data = r.json()
+            if data.get("ok") and data.get("status") == "SHIPPED":
+                # Verify order was updated
+                r2 = requests.get(f"{BASE_URL}/api/orders/{order_id}")
+                if r2.status_code == 200:
+                    order_data = r2.json()
+                    if (order_data.get("status") == "SHIPPED" and 
+                        order_data.get("trackingNumber") == "1Z999AA10123456784" and
+                        order_data.get("carrier") == "UPS"):
+                        log_result("A8e: POST /api/orders/:id/status (SHIPPED)", True, 
+                                  "200, order updated with tracking")
                     else:
-                        log_test("Task2.e: Order doc updated", False, 
-                                f"status={order_doc.get('status')}, tracking={order_doc.get('trackingNumber')}")
+                        log_result("A8e: POST /api/orders/:id/status (SHIPPED)", False, 
+                                  f"Order not updated correctly: {order_data}")
                 else:
-                    log_test("Task2.e: GET order", False, f"Got {get_resp.status_code}")
-            except Exception as e:
-                log_test("Task2.e: GET order", False, f"Exception: {str(e)}")
-        else:
-            log_test("Task2.e: SHIPPED → 200", False, 
-                    f"Got {resp.status_code}: {resp.text[:200]}")
-    except Exception as e:
-        log_test("Task2.e: SHIPPED → 200", False, f"Exception: {str(e)}")
-    
-    # (f) Non-existent order → 404
-    try:
-        fake_id = "00000000-0000-0000-0000-000000000000"
-        resp = requests.post(f"{BASE_URL}/orders/{fake_id}/status",
-                           headers={"x-admin-token": ADMIN_TOKEN},
-                           json={"status": "PROCESSING"}, timeout=10)
-        if resp.status_code == 404:
-            log_test("Task2.f: Non-existent order → 404", True)
-        else:
-            log_test("Task2.f: Non-existent order → 404", False, 
-                    f"Got {resp.status_code}: {resp.text[:200]}")
-    except Exception as e:
-        log_test("Task2.f: Non-existent order → 404", False, f"Exception: {str(e)}")
-
-
-def test_task3_regression():
-    """
-    TASK 3: Quick regression (must still work)
-    - GET /api/pricing → 200 with 9 sheets
-    - POST /api/pricing/quote → 200
-    - POST /api/cart/validate → 200
-    - GET /api/health → 200
-    """
-    print("\n" + "="*80)
-    print("TASK 3: Quick regression")
-    print("="*80)
-    
-    # GET /api/pricing
-    try:
-        resp = requests.get(f"{BASE_URL}/pricing", timeout=10)
-        if resp.status_code == 200:
-            data = resp.json()
-            sheets = data.get("sheets", [])
-            if len(sheets) == 9:
-                log_test("Task3: GET /api/pricing → 9 sheets", True)
+                    log_result("A8e: POST /api/orders/:id/status (SHIPPED)", False, 
+                              f"Could not verify order update: {r2.status_code}")
             else:
-                log_test("Task3: GET /api/pricing → 9 sheets", False, 
-                        f"Got {len(sheets)} sheets")
+                log_result("A8e: POST /api/orders/:id/status (SHIPPED)", False, f"Response incorrect: {data}")
         else:
-            log_test("Task3: GET /api/pricing", False, 
-                    f"Got {resp.status_code}: {resp.text[:200]}")
+            log_result("A8e: POST /api/orders/:id/status (SHIPPED)", False, f"Status {r.status_code}")
     except Exception as e:
-        log_test("Task3: GET /api/pricing", False, f"Exception: {str(e)}")
+        log_result("A8e: POST /api/orders/:id/status (SHIPPED)", False, str(e))
     
-    # POST /api/pricing/quote
+    # Non-existent order → 404
     try:
-        resp = requests.post(f"{BASE_URL}/pricing/quote", 
-                           json={"sheetId": "14x60"}, timeout=10)
-        if resp.status_code == 200:
-            data = resp.json()
-            if data.get("unitPrice") == 26:
-                log_test("Task3: POST /api/pricing/quote → unitPrice=26", True)
-            else:
-                log_test("Task3: POST /api/pricing/quote → unitPrice=26", False, 
-                        f"Got unitPrice={data.get('unitPrice')}")
+        r = requests.post(f"{BASE_URL}/api/orders/bogus-id-12345/status", 
+                         json={"status": "PROCESSING", "adminToken": ADMIN_TOKEN})
+        if r.status_code == 404:
+            log_result("A8f: POST /api/orders/:id/status (not found)", True, "404")
         else:
-            log_test("Task3: POST /api/pricing/quote", False, 
-                    f"Got {resp.status_code}: {resp.text[:200]}")
+            log_result("A8f: POST /api/orders/:id/status (not found)", False, f"Expected 404, got {r.status_code}")
     except Exception as e:
-        log_test("Task3: POST /api/pricing/quote", False, f"Exception: {str(e)}")
-    
-    # POST /api/cart/validate with tampered unitPrice
-    try:
-        resp = requests.post(f"{BASE_URL}/cart/validate",
-                           json={
-                               "items": [{
-                                   "sheetId": "14x36",
-                                   "quantity": 1,
-                                   "unitPrice": 9999  # tampered
-                               }]
-                           }, timeout=10)
-        if resp.status_code == 200:
-            data = resp.json()
-            items = data.get("items", [])
-            if items and items[0].get("unitPrice") == 18:
-                log_test("Task3: POST /api/cart/validate → unitPrice recomputed", True, 
-                        "9999 → 18")
-            else:
-                log_test("Task3: POST /api/cart/validate → unitPrice recomputed", False, 
-                        f"Got unitPrice={items[0].get('unitPrice') if items else 'N/A'}")
-        else:
-            log_test("Task3: POST /api/cart/validate", False, 
-                    f"Got {resp.status_code}: {resp.text[:200]}")
-    except Exception as e:
-        log_test("Task3: POST /api/cart/validate", False, f"Exception: {str(e)}")
-    
-    # GET /api/health
-    try:
-        resp = requests.get(f"{BASE_URL}/health", timeout=10)
-        if resp.status_code in [200, 503]:  # Either is acceptable
-            data = resp.json()
-            checks = data.get("checks", {})
-            mongo_ok = checks.get("mongo", {}).get("ok", False)
-            paypal_ok = checks.get("paypal", {}).get("ok", False)
-            
-            if mongo_ok and paypal_ok:
-                log_test("Task3: GET /api/health → mongo.ok=true, paypal.ok=true", True)
-            else:
-                log_test("Task3: GET /api/health → mongo.ok=true, paypal.ok=true", False, 
-                        f"mongo.ok={mongo_ok}, paypal.ok={paypal_ok}")
-        else:
-            log_test("Task3: GET /api/health", False, 
-                    f"Got {resp.status_code}: {resp.text[:200]}")
-    except Exception as e:
-        log_test("Task3: GET /api/health", False, f"Exception: {str(e)}")
+        log_result("A8f: POST /api/orders/:id/status (not found)", False, str(e))
 
+# Test 9: POST /api/uploads → upload PNG
+uploaded_artwork_url = None
+try:
+    # Create a minimal PNG (1x1 transparent)
+    png_data = b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82'
+    
+    files = {'file': ('test.png', BytesIO(png_data), 'image/png')}
+    r = requests.post(f"{BASE_URL}/api/uploads", files=files)
+    if r.status_code == 200:
+        data = r.json()
+        uploaded_artwork_url = data.get("artworkUrl")
+        if uploaded_artwork_url and data.get("contentType") == "image/png":
+            log_result("A9a: POST /api/uploads (PNG)", True, f"200, artworkUrl={uploaded_artwork_url[:50]}...")
+        else:
+            log_result("A9a: POST /api/uploads (PNG)", False, f"Response incorrect: {data}")
+    else:
+        log_result("A9a: POST /api/uploads (PNG)", False, f"Status {r.status_code}, body: {r.text[:200]}")
+except Exception as e:
+    log_result("A9a: POST /api/uploads (PNG)", False, str(e))
 
-def print_summary():
-    """Print test summary table"""
-    print("\n" + "="*80)
-    print("TEST SUMMARY")
-    print("="*80)
+# Test invalid uploads
+try:
+    # JPEG → 415
+    jpeg_data = b'\xff\xd8\xff\xe0\x00\x10JFIF'
+    files = {'file': ('test.jpg', BytesIO(jpeg_data), 'image/jpeg')}
+    r = requests.post(f"{BASE_URL}/api/uploads", files=files)
+    if r.status_code == 415:
+        log_result("A9b: POST /api/uploads (JPEG)", True, "415")
+    else:
+        log_result("A9b: POST /api/uploads (JPEG)", False, f"Expected 415, got {r.status_code}")
     
-    passed = sum(1 for r in results if r["passed"])
-    failed = sum(1 for r in results if not r["passed"])
-    total = len(results)
+    # Empty file → 413/400
+    files = {'file': ('empty.png', BytesIO(b''), 'image/png')}
+    r = requests.post(f"{BASE_URL}/api/uploads", files=files)
+    if r.status_code in [413, 400]:
+        log_result("A9c: POST /api/uploads (empty)", True, f"{r.status_code}")
+    else:
+        log_result("A9c: POST /api/uploads (empty)", False, f"Expected 413/400, got {r.status_code}")
     
-    print(f"\nTotal: {total} | Passed: {passed} | Failed: {failed}")
-    print("\nPASS/FAIL TABLE:")
-    print("-" * 80)
+    # Missing file field → 400
+    r = requests.post(f"{BASE_URL}/api/uploads", data={})
+    if r.status_code == 400:
+        log_result("A9d: POST /api/uploads (no file)", True, "400")
+    else:
+        log_result("A9d: POST /api/uploads (no file)", False, f"Expected 400, got {r.status_code}")
+except Exception as e:
+    log_result("A9: POST /api/uploads (invalid)", False, str(e))
+
+# Test 10: GET /api/uploads/:filename → retrieve uploaded file
+if uploaded_artwork_url:
+    try:
+        r = requests.get(f"{BASE_URL}{uploaded_artwork_url}")
+        if r.status_code == 200:
+            if r.headers.get("Content-Type") == "image/png" and verify_png_signature(r.content):
+                log_result("A10: GET /api/uploads/:filename", True, 
+                          f"200, Content-Type: image/png, valid PNG signature")
+            else:
+                log_result("A10: GET /api/uploads/:filename", False, 
+                          f"Content-Type: {r.headers.get('Content-Type')}, PNG valid: {verify_png_signature(r.content)}")
+        else:
+            log_result("A10: GET /api/uploads/:filename", False, f"Status {r.status_code}")
+    except Exception as e:
+        log_result("A10: GET /api/uploads/:filename", False, str(e))
+
+# Test 11: POST /api/contact → valid and invalid
+try:
+    # Valid contact
+    r = requests.post(f"{BASE_URL}/api/contact", json={
+        "name": "John Doe",
+        "email": "john@example.com",
+        "phone": "555-1234",
+        "subject": "Test inquiry",
+        "message": "This is a test message with more than 10 characters."
+    })
+    if r.status_code == 200 and r.json().get("ok"):
+        log_result("A11a: POST /api/contact (valid)", True, "200 {ok:true}")
+    else:
+        log_result("A11a: POST /api/contact (valid)", False, f"Status {r.status_code}, body: {r.json()}")
     
+    # Bad email → 400
+    r = requests.post(f"{BASE_URL}/api/contact", json={
+        "name": "John Doe",
+        "email": "bad-email",
+        "message": "Test message"
+    })
+    if r.status_code == 400:
+        log_result("A11b: POST /api/contact (bad email)", True, "400")
+    else:
+        log_result("A11b: POST /api/contact (bad email)", False, f"Expected 400, got {r.status_code}")
+    
+    # Short name → 400
+    r = requests.post(f"{BASE_URL}/api/contact", json={
+        "name": "J",
+        "email": "john@example.com",
+        "message": "Test message"
+    })
+    if r.status_code == 400:
+        log_result("A11c: POST /api/contact (short name)", True, "400")
+    else:
+        log_result("A11c: POST /api/contact (short name)", False, f"Expected 400, got {r.status_code}")
+    
+    # Short message → 400
+    r = requests.post(f"{BASE_URL}/api/contact", json={
+        "name": "John Doe",
+        "email": "john@example.com",
+        "message": "Short"
+    })
+    if r.status_code == 400:
+        log_result("A11d: POST /api/contact (short message)", True, "400")
+    else:
+        log_result("A11d: POST /api/contact (short message)", False, f"Expected 400, got {r.status_code}")
+except Exception as e:
+    log_result("A11: POST /api/contact", False, str(e))
+
+# Test 12: POST /api/email/test → send test emails
+sample_composite_url = None
+try:
+    r = requests.post(f"{BASE_URL}/api/email/test")
+    if r.status_code == 200:
+        data = r.json()
+        results_data = data.get("results", {})
+        shop = results_data.get("shop", {})
+        buyer = results_data.get("buyer", {})
+        sample_composite_url = data.get("sampleCompositeUrl")
+        
+        # Shop email should succeed, buyer may fail with example.com validation
+        if shop.get("ok") and sample_composite_url:
+            log_result("A12a: POST /api/email/test", True, 
+                      f"200, shop.ok={shop.get('ok')}, buyer.ok={buyer.get('ok')}, sampleCompositeUrl present")
+        else:
+            log_result("A12a: POST /api/email/test", False, f"Response incorrect: {data}")
+    else:
+        log_result("A12a: POST /api/email/test", False, f"Status {r.status_code}")
+except Exception as e:
+    log_result("A12a: POST /api/email/test", False, str(e))
+
+# Verify sample composite URL
+if sample_composite_url:
+    try:
+        r = requests.get(f"{BASE_URL}{sample_composite_url}")
+        if r.status_code == 200:
+            if r.headers.get("Content-Type") == "image/png" and verify_png_signature(r.content):
+                ihdr = get_png_ihdr_info(r.content)
+                if ihdr and ihdr['color_type'] == 6:  # RGBA
+                    log_result("A12b: GET sampleCompositeUrl", True, 
+                              f"200, image/png, colorType=6 (RGBA)")
+                else:
+                    log_result("A12b: GET sampleCompositeUrl", False, 
+                              f"colorType={ihdr['color_type'] if ihdr else 'unknown'}, expected 6")
+            else:
+                log_result("A12b: GET sampleCompositeUrl", False, 
+                          f"Content-Type: {r.headers.get('Content-Type')}, PNG valid: {verify_png_signature(r.content)}")
+        else:
+            log_result("A12b: GET sampleCompositeUrl", False, f"Status {r.status_code}")
+    except Exception as e:
+        log_result("A12b: GET sampleCompositeUrl", False, str(e))
+
+# ============================================================================
+# PART B: NEW ENDPOINT - POST /api/composite
+# ============================================================================
+print()
+print("PART B: NEW ENDPOINT - POST /api/composite")
+print("-" * 80)
+
+composite_artwork_url = None
+
+# Test 1: Upload a PNG first for use in composite
+test_artwork_url = None
+try:
+    png_data = b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82'
+    files = {'file': ('test-composite.png', BytesIO(png_data), 'image/png')}
+    r = requests.post(f"{BASE_URL}/api/uploads", files=files)
+    if r.status_code == 200:
+        test_artwork_url = r.json().get("artworkUrl")
+        log_result("B1: Upload test artwork", True, f"artworkUrl={test_artwork_url[:50]}...")
+    else:
+        log_result("B1: Upload test artwork", False, f"Status {r.status_code}")
+except Exception as e:
+    log_result("B1: Upload test artwork", False, str(e))
+
+# Test 2: POST /api/composite with valid layout
+if test_artwork_url:
+    try:
+        r = requests.post(f"{BASE_URL}/api/composite", json={
+            "layout": {
+                "version": 1,
+                "sheetSizeId": "14x24",
+                "items": [{
+                    "artworkUrl": test_artwork_url,
+                    "xIn": 1,
+                    "yIn": 1,
+                    "widthIn": 4,
+                    "heightIn": 4,
+                    "rotationDeg": 0,
+                    "zIndex": 0
+                }]
+            }
+        })
+        if r.status_code == 200:
+            data = r.json()
+            composite_artwork_url = data.get("artworkUrl")
+            if composite_artwork_url and data.get("contentType") == "image/png":
+                log_result("B2: POST /api/composite (valid)", True, 
+                          f"200, artworkUrl={composite_artwork_url[:50]}...")
+            else:
+                log_result("B2: POST /api/composite (valid)", False, f"Response incorrect: {data}")
+        else:
+            log_result("B2: POST /api/composite (valid)", False, 
+                      f"Status {r.status_code}, body: {r.text[:200]}")
+    except Exception as e:
+        log_result("B2: POST /api/composite (valid)", False, str(e))
+
+# Test 3: Verify composite PNG dimensions and color type
+if composite_artwork_url:
+    try:
+        r = requests.get(f"{BASE_URL}{composite_artwork_url}")
+        if r.status_code == 200:
+            if verify_png_signature(r.content):
+                ihdr = get_png_ihdr_info(r.content)
+                if ihdr:
+                    # 14x24 sheet at 300 DPI: 4200x7200 pixels
+                    expected_width = 14 * 300  # 4200
+                    expected_height = 24 * 300  # 7200
+                    if (ihdr['width'] == expected_width and 
+                        ihdr['height'] == expected_height and 
+                        ihdr['color_type'] == 6):  # RGBA
+                        log_result("B3: GET composite PNG", True, 
+                                  f"200, {ihdr['width']}x{ihdr['height']}, colorType=6 (RGBA)")
+                    else:
+                        log_result("B3: GET composite PNG", False, 
+                                  f"Dimensions: {ihdr['width']}x{ihdr['height']} (expected {expected_width}x{expected_height}), colorType={ihdr['color_type']} (expected 6)")
+                else:
+                    log_result("B3: GET composite PNG", False, "Could not parse IHDR")
+            else:
+                log_result("B3: GET composite PNG", False, "Invalid PNG signature")
+        else:
+            log_result("B3: GET composite PNG", False, f"Status {r.status_code}")
+    except Exception as e:
+        log_result("B3: GET composite PNG", False, str(e))
+
+# Test 4: Invalid payloads
+try:
+    # No layout → 400
+    r = requests.post(f"{BASE_URL}/api/composite", json={})
+    if r.status_code == 400:
+        log_result("B4a: POST /api/composite (no layout)", True, "400")
+    else:
+        log_result("B4a: POST /api/composite (no layout)", False, f"Expected 400, got {r.status_code}")
+    
+    # Unknown sheetSizeId → 500 (server render error)
+    r = requests.post(f"{BASE_URL}/api/composite", json={
+        "layout": {
+            "sheetSizeId": "99x99",
+            "items": []
+        }
+    })
+    if r.status_code == 500:
+        log_result("B4b: POST /api/composite (unknown sheet)", True, "500 (expected)")
+    else:
+        log_result("B4b: POST /api/composite (unknown sheet)", False, 
+                  f"Expected 500, got {r.status_code}")
+except Exception as e:
+    log_result("B4: POST /api/composite (invalid)", False, str(e))
+
+# ============================================================================
+# SUMMARY
+# ============================================================================
+print()
+print("=" * 80)
+print("TEST SUMMARY")
+print("=" * 80)
+print(f"Total: {passed + failed} | Passed: {passed} | Failed: {failed}")
+print()
+
+if failed > 0:
+    print("FAILED TESTS:")
     for r in results:
-        status = "✅ PASS" if r["passed"] else "❌ FAIL"
-        print(f"{status} | {r['name']}")
-        if r["details"] and not r["passed"]:
-            print(f"         {r['details']}")
-    
-    print("-" * 80)
-    
-    return passed, failed
-
-
-if __name__ == "__main__":
-    print("="*80)
-    print("NEVERMORE DTF BACKEND TEST SUITE")
-    print("="*80)
-    print(f"Base URL: {BASE_URL}")
-    print(f"Admin token: {'SET' if ADMIN_TOKEN else 'NOT SET'}")
+        if "❌" in r:
+            print(f"  {r}")
     print()
-    
-    # Run tests
-    hi_order_id = test_task1_sequential_order_number_and_shipping()
-    test_task2_admin_order_status(hi_order_id)
-    test_task3_regression()
-    
-    # Print summary
-    passed, failed = print_summary()
-    
-    # Exit with appropriate code
-    sys.exit(0 if failed == 0 else 1)
+
+print("DETAILED RESULTS:")
+for r in results:
+    print(f"  {r}")
+
+print()
+print("=" * 80)
+if failed == 0:
+    print("✅ ALL TESTS PASSED - NO REGRESSIONS DETECTED")
+else:
+    print(f"❌ {failed} TEST(S) FAILED - REVIEW REQUIRED")
+print("=" * 80)

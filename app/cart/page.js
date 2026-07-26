@@ -137,7 +137,7 @@ export default function CartPage() {
                   </span>
                 </div>
                 <div className="flex justify-between text-neutral-500">
-                  <span>Shipping</span><span>calculated next step</span>
+                  <span>Shipping</span><span>region-based · calculated next step</span>
                 </div>
               </div>
               {validationError && (

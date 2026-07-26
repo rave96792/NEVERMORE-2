@@ -33,7 +33,7 @@ export default function CheckoutPage() {
       try {
         const r = await fetch('/api/cart/validate', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ items, shipping: { state: shipping.state } }),
+          body: JSON.stringify({ items, shipping: { state: shipping.state, country: shipping.country } }),
         })
         const j = await r.json()
         if (cancelled) return
@@ -43,7 +43,7 @@ export default function CheckoutPage() {
       finally { if (!cancelled) setValidating(false) }
     })()
     return () => { cancelled = true }
-  }, [items, hydrated, shipping.state])
+  }, [items, hydrated, shipping.state, shipping.country])
 
   const isValid = useMemo(() => {
     const s = shipping
@@ -134,7 +134,7 @@ export default function CheckoutPage() {
               </ul>
               <div className="mt-4 space-y-1 text-sm border-t border-white/10 pt-4">
                 <div className="flex justify-between text-neutral-300"><span>Subtotal</span><span>${totals ? totals.subtotal.toFixed(2) : '…'}</span></div>
-                <div className="flex justify-between text-neutral-300"><span>Shipping</span><span>{totals && totals.shipping === 0 ? 'FREE' : totals ? `$${totals.shipping.toFixed(2)}` : '…'}</span></div>
+                <div className="flex justify-between text-neutral-300"><span>Shipping</span><span>{totals ? `$${totals.shipping.toFixed(2)}` : '…'}</span></div>
                 <div className="flex justify-between text-neutral-300">
                   <span>Tax {totals?.taxState === 'HI' ? '(HI 4.712%)' : ''}</span>
                   <span>${totals ? totals.tax.toFixed(2) : '0.00'}</span>

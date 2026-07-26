@@ -142,7 +142,8 @@ async function handleRoute(request, { params }) {
       const result = validateCart(body.items)
       if (!result.ok) return handleCORS(NextResponse.json({ error: result.error }, { status: 400 }))
       const shippingState = body?.shipping?.state
-      const totals = computeTotals({ subtotal: result.subtotal, shippingState })
+      const shippingCountry = body?.shipping?.country
+      const totals = computeTotals({ subtotal: result.subtotal, shippingState, shippingCountry })
       return handleCORS(NextResponse.json({ ...result, ...totals }))
     }
 
@@ -163,7 +164,7 @@ async function handleRoute(request, { params }) {
       if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s.email)) {
         return handleCORS(NextResponse.json({ error: 'Invalid email' }, { status: 400 }))
       }
-      const totals = computeTotals({ subtotal: cartRes.subtotal, shippingState: s.state })
+      const totals = computeTotals({ subtotal: cartRes.subtotal, shippingState: s.state, shippingCountry: s.country })
       const internalOrderId = uuidv4()
 
       // 3. Create PayPal order with the trusted total

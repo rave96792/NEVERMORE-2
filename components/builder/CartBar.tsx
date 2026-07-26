@@ -5,7 +5,7 @@ import { ShoppingCart, Minus, Plus, AlertTriangle, Loader2 } from 'lucide-react'
 import { SHEETS } from '@/lib/builder/constants'
 import type { Layout } from '@/lib/builder/types'
 import { itemDpi } from '@/lib/builder/dpi'
-import { exportAndUpload } from '@/lib/builder/export'
+import { exportAndUpload, exportAndUploadServer } from '@/lib/builder/export'
 import { toast } from 'sonner'
 import { useCart } from '@/components/CartProvider'
 import { useRouter } from 'next/navigation'
@@ -34,7 +34,15 @@ export default function CartBar({ layout }: Props) {
     }
     setAdding(true)
     try {
-      const compositeUrl = await exportAndUpload(layout)
+      // Prefer server-side sharp render (identical output on all devices). Fall back to
+      // client canvas render if the server fails (5xx, timeout, etc.).
+      let compositeUrl: string
+      try {
+        compositeUrl = await exportAndUploadServer(layout)
+      } catch (serverErr: any) {
+        console.warn('[composite] server render failed, falling back to client:', serverErr?.message)
+        compositeUrl = await exportAndUpload(layout)
+      }
       // Add to cart with the same shape existing cart expects
       addItem({
         sheetId: layout.sheetSizeId as any,

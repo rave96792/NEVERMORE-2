@@ -475,6 +475,49 @@ async function handleRoute(request, { params }) {
       return handleCORS(NextResponse.json({ ok: true, status: newStatus, email }))
     }
 
+    // ============ Server-side composite render (sharp) ============
+    // POST /api/composite  body:{ layout }  →  uploads a print-ready 300 DPI PNG,
+    // returns { artworkUrl, size, storage }. Client falls back to canvas render on 4xx/5xx.
+    if (route === '/composite' && method === 'POST') {
+      try {
+        const body = await request.json()
+        const layout = body?.layout
+        if (!layout || typeof layout !== 'object') {
+          return handleCORS(NextResponse.json({ error: 'layout is required' }, { status: 400 }))
+        }
+        const { renderCompositeServer } = await import('@/lib/builder/serverComposite')
+        // Resolve relative artwork URLs against this server's origin
+        const origin = new URL(request.url).origin
+        const buf = await renderCompositeServer(layout, { origin })
+        if (!buf || buf.length < 100) {
+          return handleCORS(NextResponse.json({ error: 'Composite render produced empty PNG' }, { status: 500 }))
+        }
+
+        // Store the composite using the same storage as /api/uploads
+        const filename = `${uuidv4()}.png`
+        if (process.env.BLOB_READ_WRITE_TOKEN) {
+          const { put } = await import('@vercel/blob')
+          const blob = await put(`uploads/${filename}`, buf, {
+            access: 'public',
+            token: process.env.BLOB_READ_WRITE_TOKEN,
+            contentType: 'image/png',
+            addRandomSuffix: false,
+          })
+          return handleCORS(NextResponse.json({
+            artworkUrl: blob.url, filename, size: buf.length, contentType: 'image/png', storage: 'blob',
+          }))
+        }
+        await fs.mkdir(UPLOAD_DIR, { recursive: true })
+        await fs.writeFile(path.join(UPLOAD_DIR, filename), buf)
+        return handleCORS(NextResponse.json({
+          artworkUrl: `/api/uploads/${filename}`, filename, size: buf.length, contentType: 'image/png', storage: 'disk',
+        }))
+      } catch (e) {
+        console.error('[composite] render failed:', e?.message)
+        return handleCORS(NextResponse.json({ error: e?.message || 'Composite render failed', detail: 'server_composite_failed' }, { status: 500 }))
+      }
+    }
+
     // ============ Uploads (Vercel Blob when token set, else persistent disk) ============
     // POST /api/uploads   → save file, return { artworkUrl, filename, size, contentType }
     if (route === '/uploads' && method === 'POST') {

@@ -56,3 +56,23 @@ export async function exportAndUpload(layout: Layout): Promise<string> {
   const j = await r.json()
   return j.artworkUrl as string
 }
+
+/**
+ * Ask the server to render the composite with sharp. Returns the artwork URL.
+ * Throws on non-2xx so the caller can fall back to the client canvas renderer.
+ */
+export async function exportAndUploadServer(layout: Layout): Promise<string> {
+  const r = await fetch('/api/composite', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ layout }),
+  })
+  if (!r.ok) {
+    let msg = 'Server composite render failed'
+    try { const j = await r.json(); msg = j?.error || msg } catch {}
+    throw new Error(msg)
+  }
+  const j = await r.json()
+  if (!j?.artworkUrl) throw new Error('Server composite returned no artworkUrl')
+  return j.artworkUrl as string
+}

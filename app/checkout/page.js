@@ -154,7 +154,7 @@ export default function CheckoutPage() {
                 )}
                 <div className={isValid ? '' : 'pointer-events-none opacity-40'} data-testid="paypal-slot">
                   <PayPalScriptProvider options={{
-                    clientId: process.env.NEXT_PUBLIC_PAYPAL_CLIENT_ID,
+                    clientId: process.env.NEXT_PUBLIC_PAYPAL_CLIENT_ID || 'BAApcJIfSxLNqdvkKm0KwdR8KV7IKZyeL4NNz0J4XJxZvf5XMhLo0PfWcNWyC9A_8XOnuoZKsYPJOeOCnE',
                     currency: 'USD',
                     intent: 'capture',
                   }}>
@@ -184,7 +184,7 @@ export default function CheckoutPage() {
                         clear()
                         router.push(`/order/${j.internalOrderId}`)
                       }}
-                      onError={(e) => { console.error(e); toast.error('PayPal error') }}
+                      onError={(e) => { console.error('PayPal SDK error:', e); toast.error(`PayPal error: ${e?.message || 'SDK failed to load. If on iOS Safari, try disabling "Advanced Privacy Protection" for this site.'}`) }}
                       onCancel={() => toast('Payment cancelled')}
                     />
                   </PayPalScriptProvider>

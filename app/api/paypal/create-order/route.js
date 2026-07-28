@@ -17,10 +17,13 @@ export async function POST(request) {
     const cartRes = validateCart(body.items)
     if (!cartRes.ok) return handleCORS(NextResponse.json({ error: cartRes.error }, { status: 400 }))
 
-    // 2. Validate shipping
+    // 2. Validate shipping / pickup
     const s = body.shipping || {}
-    const required = ['fullName', 'email', 'line1', 'city', 'state', 'postalCode', 'country']
-    for (const k of required) {
+    const deliveryMethod = body?.deliveryMethod === 'pickup' ? 'pickup' : 'ship'
+
+    // For BOTH methods we need a real name + email + phone (so we can contact the buyer).
+    const alwaysRequired = ['fullName', 'email']
+    for (const k of alwaysRequired) {
       if (!s[k] || String(s[k]).trim().length < 2) {
         return handleCORS(NextResponse.json({ error: `Missing/invalid shipping.${k}` }, { status: 400 }))
       }
@@ -28,7 +31,18 @@ export async function POST(request) {
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s.email)) {
       return handleCORS(NextResponse.json({ error: 'Invalid email' }, { status: 400 }))
     }
-    const totals = computeTotals({ subtotal: cartRes.subtotal, shippingState: s.state, shippingCountry: s.country })
+    // For SHIP method we ALSO need the full address (line1/city/state/postal/country).
+    if (deliveryMethod === 'ship') {
+      const shipRequired = ['line1', 'city', 'state', 'postalCode', 'country']
+      for (const k of shipRequired) {
+        if (!s[k] || String(s[k]).trim().length < 2) {
+          return handleCORS(NextResponse.json({ error: `Missing/invalid shipping.${k}` }, { status: 400 }))
+        }
+      }
+    }
+    // Pickup is always in Hawaii → apply HI tax even without a shipping address
+    const stateForTax = deliveryMethod === 'pickup' ? 'HI' : s.state
+    const totals = computeTotals({ subtotal: cartRes.subtotal, shippingState: stateForTax, shippingCountry: s.country || 'US', deliveryMethod })
     const internalOrderId = uuidv4()
 
     // 3. Create PayPal order with trusted total
@@ -67,10 +81,11 @@ export async function POST(request) {
         taxState: totals.taxState,
         total: totals.total,
         currency: 'USD',
+        deliveryMethod,
         shipping: {
           fullName: s.fullName, email: s.email, phone: s.phone || null,
-          line1: s.line1, line2: s.line2 || null, city: s.city, state: s.state,
-          postalCode: s.postalCode, country: s.country,
+          line1: s.line1 || null, line2: s.line2 || null, city: s.city || null, state: s.state || null,
+          postalCode: s.postalCode || null, country: s.country || null,
         },
         createdAt: new Date(),
         updatedAt: new Date(),

@@ -16,6 +16,7 @@ const US_STATES = ['AL','AK','AZ','AR','CA','CO','CT','DE','FL','GA','HI','ID','
 export default function CheckoutPage() {
   const router = useRouter()
   const { items, hydrated, clear } = useCart()
+  const [deliveryMethod, setDeliveryMethod] = useState('ship') // 'ship' | 'pickup'
   const [shipping, setShipping] = useState({
     fullName: '', email: '', phone: '',
     line1: '', line2: '', city: '', state: '', postalCode: '', country: 'US',
@@ -33,7 +34,11 @@ export default function CheckoutPage() {
       try {
         const r = await fetch('/api/cart/validate', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ items, shipping: { state: shipping.state, country: shipping.country } }),
+          body: JSON.stringify({
+            items,
+            shipping: { state: shipping.state, country: shipping.country },
+            deliveryMethod,
+          }),
         })
         const j = await r.json()
         if (cancelled) return
@@ -43,12 +48,14 @@ export default function CheckoutPage() {
       finally { if (!cancelled) setValidating(false) }
     })()
     return () => { cancelled = true }
-  }, [items, hydrated, shipping.state, shipping.country])
+  }, [items, hydrated, shipping.state, shipping.country, deliveryMethod])
 
   const isValid = useMemo(() => {
     const s = shipping
-    return !!(s.fullName && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s.email) && s.line1 && s.city && s.state && s.postalCode && s.country)
-  }, [shipping])
+    const baseOk = !!(s.fullName && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s.email))
+    if (deliveryMethod === 'pickup') return baseOk && !!s.phone // phone required for pickup coordination
+    return baseOk && !!(s.line1 && s.city && s.state && s.postalCode && s.country)
+  }, [shipping, deliveryMethod])
 
   const set = (k) => (e) => setShipping((prev) => ({ ...prev, [k]: e.target.value }))
 
@@ -80,15 +87,41 @@ export default function CheckoutPage() {
                     <Input data-testid="in-email" type="email" value={shipping.email} onChange={set('email')} className="mt-1 bg-white/5 border-white/10" />
                   </div>
                   <div className="sm:col-span-2">
-                    <Label className="text-xs text-neutral-300">Phone (optional)</Label>
+                    <Label className="text-xs text-neutral-300">Phone {deliveryMethod === 'pickup' ? <span className="text-emerald-300">(required for pickup)</span> : '(optional)'}</Label>
                     <Input data-testid="in-phone" value={shipping.phone} onChange={set('phone')} className="mt-1 bg-white/5 border-white/10" />
                   </div>
                 </div>
               </section>
 
-              {/* Shipping */}
+              {/* Delivery method */}
               <section className="rounded-2xl border border-white/10 bg-white/[0.03] p-6">
-                <h2 className="text-xs font-bold uppercase tracking-widest text-fuchsia-300">02 · Shipping address</h2>
+                <h2 className="text-xs font-bold uppercase tracking-widest text-fuchsia-300">02 · Delivery</h2>
+                <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                  <button
+                    type="button"
+                    data-testid="delivery-ship"
+                    onClick={() => setDeliveryMethod('ship')}
+                    className={`rounded-xl border p-4 text-left transition ${deliveryMethod === 'ship' ? 'border-fuchsia-500 bg-fuchsia-500/10' : 'border-white/10 bg-white/[0.02] hover:border-white/25'}`}
+                  >
+                    <div className="text-sm font-bold">Ship to me</div>
+                    <div className="mt-1 text-xs text-neutral-400">$5 flat to Hawaii · $12 flat to the rest of the US</div>
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="delivery-pickup"
+                    onClick={() => setDeliveryMethod('pickup')}
+                    className={`rounded-xl border p-4 text-left transition ${deliveryMethod === 'pickup' ? 'border-fuchsia-500 bg-fuchsia-500/10' : 'border-white/10 bg-white/[0.02] hover:border-white/25'}`}
+                  >
+                    <div className="flex items-center gap-2 text-sm font-bold">Free local pickup <span className="rounded bg-emerald-500/20 px-1.5 py-0.5 text-[10px] font-bold text-emerald-300">FREE</span></div>
+                    <div className="mt-1 text-xs text-neutral-400">Honolulu, HI — we'll email you when your order is ready. Phone required.</div>
+                  </button>
+                </div>
+              </section>
+
+              {/* Shipping address (only when Ship is chosen) */}
+              {deliveryMethod === 'ship' && (
+              <section className="rounded-2xl border border-white/10 bg-white/[0.03] p-6">
+                <h2 className="text-xs font-bold uppercase tracking-widest text-fuchsia-300">03 · Shipping address</h2>
                 <div className="mt-4 grid gap-4 sm:grid-cols-2">
                   <div className="sm:col-span-2">
                     <Label className="text-xs text-neutral-300">Street address</Label>
@@ -119,6 +152,24 @@ export default function CheckoutPage() {
                   </div>
                 </div>
               </section>
+              )}
+
+              {/* Pickup details (only when Pickup is chosen) */}
+              {deliveryMethod === 'pickup' && (
+                <section className="rounded-2xl border border-emerald-500/30 bg-emerald-500/[0.06] p-6">
+                  <h2 className="text-xs font-bold uppercase tracking-widest text-emerald-300">03 · Pickup details</h2>
+                  <div className="mt-3 text-sm text-emerald-100/90">
+                    We'll email <strong>{shipping.email || 'you'}</strong> as soon as your gang sheet is ready.
+                    Bring a printed or on-screen copy of your order # for a quick handoff.
+                  </div>
+                  <div className="mt-4 rounded-lg bg-black/40 p-4 text-xs text-neutral-300">
+                    <div className="text-[10px] uppercase tracking-widest text-neutral-500">Pickup location</div>
+                    <div className="mt-1 text-neutral-100 font-semibold">Nevermore DTF · Honolulu, HI</div>
+                    <div className="text-neutral-400">Exact address + pickup window will be sent in your confirmation email.</div>
+                  </div>
+                  <div className="mt-3 text-[11px] text-emerald-300/80">Hawaii GET (4.712%) still applies on pickup orders.</div>
+                </section>
+              )}
             </div>
 
             {/* Summary + PayPal */}
@@ -134,7 +185,10 @@ export default function CheckoutPage() {
               </ul>
               <div className="mt-4 space-y-1 text-sm border-t border-white/10 pt-4">
                 <div className="flex justify-between text-neutral-300"><span>Subtotal</span><span>${totals ? totals.subtotal.toFixed(2) : '…'}</span></div>
-                <div className="flex justify-between text-neutral-300"><span>Shipping</span><span>{totals ? `$${totals.shipping.toFixed(2)}` : '…'}</span></div>
+                <div className="flex justify-between text-neutral-300">
+                  <span>{deliveryMethod === 'pickup' ? 'Pickup' : 'Shipping'}</span>
+                  <span>{deliveryMethod === 'pickup' ? <span className="text-emerald-300 font-semibold">FREE</span> : (totals ? `$${totals.shipping.toFixed(2)}` : '…')}</span>
+                </div>
                 <div className="flex justify-between text-neutral-300">
                   <span>Tax {totals?.taxState === 'HI' ? '(HI 4.712%)' : ''}</span>
                   <span>${totals ? totals.tax.toFixed(2) : '0.00'}</span>
@@ -149,7 +203,9 @@ export default function CheckoutPage() {
               <div className="mt-6">
                 {!isValid && (
                   <div className="mb-3 rounded-md border border-yellow-500/30 bg-yellow-500/10 p-2 text-xs text-yellow-300">
-                    Fill in contact + shipping to enable PayPal.
+                    {deliveryMethod === 'pickup'
+                      ? 'Enter name, email, and phone to enable PayPal.'
+                      : 'Fill in contact + shipping to enable PayPal.'}
                   </div>
                 )}
                 <div className={isValid ? '' : 'pointer-events-none opacity-40'} data-testid="paypal-slot">
@@ -166,7 +222,7 @@ export default function CheckoutPage() {
                         setErr(null)
                         const r = await fetch('/api/paypal/create-order', {
                           method: 'POST', headers: { 'Content-Type': 'application/json' },
-                          body: JSON.stringify({ items, shipping }),
+                          body: JSON.stringify({ items, shipping, deliveryMethod }),
                         })
                         const j = await r.json()
                         if (!r.ok) { toast.error(j.error || 'Failed to start checkout'); throw new Error(j.error) }

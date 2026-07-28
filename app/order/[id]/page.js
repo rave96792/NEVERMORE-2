@@ -65,12 +65,24 @@ export default function OrderPage() {
 
               <div className="mt-6 grid gap-6 sm:grid-cols-2 text-sm">
                 <div>
-                  <div className="text-xs uppercase tracking-widest text-neutral-500 mb-2">Ship to</div>
-                  <div className="text-white">{order.shipping?.fullName}</div>
-                  <div className="text-neutral-400">{order.shipping?.line1}{order.shipping?.line2 ? `, ${order.shipping.line2}` : ''}</div>
-                  <div className="text-neutral-400">{order.shipping?.city}, {order.shipping?.state} {order.shipping?.postalCode}</div>
-                  <div className="text-neutral-400">{order.shipping?.country}</div>
-                  <div className="mt-2 text-neutral-500 text-xs">{order.shipping?.email}</div>
+                  {order.deliveryMethod === 'pickup' ? (
+                    <>
+                      <div className="text-xs uppercase tracking-widest text-emerald-400 mb-2">Free local pickup</div>
+                      <div className="text-white">{order.shipping?.fullName}</div>
+                      <div className="text-neutral-400">{order.shipping?.email}{order.shipping?.phone ? ` · ${order.shipping.phone}` : ''}</div>
+                      <div className="mt-2 text-neutral-400 text-sm">Nevermore DTF · Honolulu, HI</div>
+                      <div className="mt-1 text-neutral-500 text-xs">We'll email you when your order is ready.</div>
+                    </>
+                  ) : (
+                    <>
+                      <div className="text-xs uppercase tracking-widest text-neutral-500 mb-2">Ship to</div>
+                      <div className="text-white">{order.shipping?.fullName}</div>
+                      <div className="text-neutral-400">{order.shipping?.line1}{order.shipping?.line2 ? `, ${order.shipping.line2}` : ''}</div>
+                      <div className="text-neutral-400">{order.shipping?.city}, {order.shipping?.state} {order.shipping?.postalCode}</div>
+                      <div className="text-neutral-400">{order.shipping?.country}</div>
+                      <div className="mt-2 text-neutral-500 text-xs">{order.shipping?.email}</div>
+                    </>
+                  )}
                 </div>
                 <div>
                   <div className="text-xs uppercase tracking-widest text-neutral-500 mb-2">Payment</div>

@@ -1,37 +1,90 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 import { useParams } from 'next/navigation'
 import Link from 'next/link'
 import Navbar from '@/components/Navbar'
-import { CheckCircle2, Clock, XCircle, Package } from 'lucide-react'
+import { CheckCircle2, Clock, XCircle, Package, RefreshCw, AlertTriangle } from 'lucide-react'
 
 export default function OrderPage() {
   const { id } = useParams()
   const [order, setOrder] = useState(null)
   const [err, setErr] = useState(null)
   const [loading, setLoading] = useState(true)
+  const [rerendering, setRerendering] = useState(false)
+  const [rerenderMsg, setRerenderMsg] = useState(null)
 
-  useEffect(() => {
+  const refresh = useCallback(async () => {
     if (!id) return
-    let cancelled = false
-    ;(async () => {
-      try {
-        const r = await fetch(`/api/orders/${id}`)
-        const j = await r.json()
-        if (cancelled) return
-        if (!r.ok) setErr(j.error || 'Not found')
-        else setOrder(j)
-      } catch { if (!cancelled) setErr('Network error') }
-      finally { if (!cancelled) setLoading(false) }
-    })()
-    return () => { cancelled = true }
+    try {
+      const r = await fetch(`/api/orders/${id}`, { cache: 'no-store' })
+      const j = await r.json()
+      if (!r.ok) setErr(j.error || 'Not found')
+      else { setOrder(j); setErr(null) }
+    } catch { setErr('Network error') }
+    finally { setLoading(false) }
   }, [id])
+
+  useEffect(() => { refresh() }, [refresh])
+
+  // Auto-poll every 5s while render is in-progress or pending_retry (server may still be working)
+  useEffect(() => {
+    if (!order) return
+    const s = order.renderStatus
+    if (s !== 'rendering' && s !== 'pending' && s !== 'pending_retry') return
+    const t = setInterval(refresh, 5000)
+    return () => clearInterval(t)
+  }, [order, refresh])
 
   const StatusBadge = ({ s }) => {
     if (s === 'PAID') return <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/15 border border-emerald-500/40 px-3 py-1 text-xs font-bold uppercase tracking-widest text-emerald-300"><CheckCircle2 className="h-3.5 w-3.5" /> Paid</span>
     if (s === 'FAILED') return <span className="inline-flex items-center gap-1 rounded-full bg-red-500/15 border border-red-500/40 px-3 py-1 text-xs font-bold uppercase tracking-widest text-red-300"><XCircle className="h-3.5 w-3.5" /> Failed</span>
     return <span className="inline-flex items-center gap-1 rounded-full bg-yellow-500/15 border border-yellow-500/40 px-3 py-1 text-xs font-bold uppercase tracking-widest text-yellow-300"><Clock className="h-3.5 w-3.5" /> {s || 'Pending'}</span>
+  }
+
+  const RenderStatusBadge = ({ order }) => {
+    const s = order?.renderStatus
+    if (!s) return null
+    const items = order.items || []
+    const usedEmergency = items.some((it) => it?.printFileSource === 'client-emergency')
+    if (s === 'succeeded') return (
+      <div className="inline-flex items-center gap-1.5 rounded-full bg-emerald-500/15 border border-emerald-500/40 px-2.5 py-1 text-[11px] font-bold uppercase tracking-widest text-emerald-300">
+        <CheckCircle2 className="h-3 w-3" /> Print file ready
+      </div>
+    )
+    if (s === 'rendering' || s === 'pending' || s === 'pending_retry') return (
+      <div className="inline-flex items-center gap-1.5 rounded-full bg-fuchsia-500/15 border border-fuchsia-500/40 px-2.5 py-1 text-[11px] font-bold uppercase tracking-widest text-fuchsia-300">
+        <RefreshCw className="h-3 w-3 animate-spin" /> Preparing print file…
+      </div>
+    )
+    if (s === 'failed') return (
+      <div className="inline-flex items-center gap-1.5 rounded-full bg-red-500/15 border border-red-500/40 px-2.5 py-1 text-[11px] font-bold uppercase tracking-widest text-red-300">
+        <AlertTriangle className="h-3 w-3" /> Render failed{usedEmergency ? ' · using emergency fallback' : ''}
+      </div>
+    )
+    return null
+  }
+
+  const handleRerender = async () => {
+    const token = window.prompt('Admin token to re-render this order:')
+    if (!token) return
+    setRerendering(true)
+    setRerenderMsg(null)
+    try {
+      const r = await fetch(`/api/orders/${id}/rerender`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-admin-token': token },
+        body: JSON.stringify({ force: true }),
+      })
+      const j = await r.json()
+      if (!r.ok) setRerenderMsg(`❌ ${j.error || 'Failed'}`)
+      else setRerenderMsg(`✅ ${j.renderedCount}/${j.totalItems} rendered · attempt ${j.attempt} · ${j.status}`)
+      await refresh()
+    } catch (e) {
+      setRerenderMsg(`❌ ${e?.message || 'Network error'}`)
+    } finally {
+      setRerendering(false)
+    }
   }
 
   return (
@@ -60,8 +113,35 @@ export default function OrderPage() {
                   <div className="text-xs text-neutral-500">Order</div>
                   <div className="font-mono text-sm text-white" data-testid="order-id">{order.id}</div>
                 </div>
-                <StatusBadge s={order.status} />
+                <div className="flex items-center gap-2 flex-wrap">
+                  <RenderStatusBadge order={order} />
+                  <StatusBadge s={order.status} />
+                </div>
               </div>
+
+              {/* Render status detail row — only visible when there's something to show */}
+              {order.renderStatus && order.renderStatus !== 'succeeded' && (
+                <div className="mt-4 rounded-lg border border-white/10 bg-white/[0.02] p-3 text-xs text-neutral-300">
+                  {order.renderStatus === 'rendering' || order.renderStatus === 'pending' ? (
+                    <span className="text-fuchsia-300">Preparing your print-ready file (300 DPI transparent PNG). This normally finishes in a few seconds.</span>
+                  ) : order.renderStatus === 'pending_retry' ? (
+                    <span className="text-yellow-300">Print file didn't render on the first try — will retry automatically.</span>
+                  ) : (
+                    <>
+                      <span className="text-red-300">Print file render failed after {order.renderAttempts || '?'} attempt(s). Your order is safe and paid — we're using the emergency in-browser render as a placeholder.</span>
+                      <button
+                        onClick={handleRerender}
+                        disabled={rerendering}
+                        className="mt-2 inline-flex items-center gap-1 rounded border border-fuchsia-500/40 bg-fuchsia-500/10 px-2 py-1 text-[11px] text-fuchsia-200 hover:bg-fuchsia-500/20 disabled:opacity-40"
+                        data-testid="btn-rerender"
+                      >
+                        <RefreshCw className={`h-3 w-3 ${rerendering ? 'animate-spin' : ''}`} /> Regenerate print file
+                      </button>
+                    </>
+                  )}
+                  {rerenderMsg && <div className="mt-2 text-neutral-300">{rerenderMsg}</div>}
+                </div>
+              )}
 
               <div className="mt-6 grid gap-6 sm:grid-cols-2 text-sm">
                 <div>

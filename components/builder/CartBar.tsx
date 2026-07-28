@@ -34,14 +34,23 @@ export default function CartBar({ layout }: Props) {
     }
     setAdding(true)
     try {
-      // Prefer server-side sharp render (identical output on all devices). Fall back to
-      // client canvas render if the server fails (5xx, timeout, etc.).
+      // 🔨 PRINT-FILE PIPELINE:
+      // 1. Try server-side sharp render (authoritative — 300 DPI, transparent, deterministic).
+      // 2. If sharp fails (network, timeout, cold-start), fall back to CLIENT canvas render.
+      //    Client render is EMERGENCY FALLBACK ONLY — it depends on the buyer's device
+      //    fonts / GPU / colour profile, so quality is not guaranteed.
+      // 3. Either way, the FULL layout is persisted on the cart item so that after payment
+      //    capture the server can re-render authoritatively (see /api/paypal/capture-order
+      //    and /api/orders/[id]/rerender).
       let compositeUrl: string
+      let printFileSource: 'sharp-authoritative' | 'client-emergency'
       try {
         compositeUrl = await exportAndUploadServer(layout)
+        printFileSource = 'sharp-authoritative'
       } catch (serverErr: any) {
-        console.warn('[composite] server render failed, falling back to client:', serverErr?.message)
+        console.warn('[composite] server render failed — using CLIENT EMERGENCY fallback:', serverErr?.message)
         compositeUrl = await exportAndUpload(layout)
+        printFileSource = 'client-emergency'
       }
       // Add to cart with the same shape existing cart expects
       addItem({
@@ -63,6 +72,7 @@ export default function CartBar({ layout }: Props) {
           })),
         },
         compositeUrl,
+        printFileSource,
         qualityWarnings: warnings.length,
       } as any)
       toast.success('Added to cart', { description: `${quantity}× ${sheet.label} · $${total.toFixed(2)}` })

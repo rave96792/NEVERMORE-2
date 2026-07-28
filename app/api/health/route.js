@@ -15,6 +15,17 @@ function redact(s) {
   return `${s.slice(0, 4)}…${s.slice(-4)} (len ${s.length})`
 }
 
+// Extract Mongo Atlas username + host without leaking the password.
+function mongoInfo() {
+  const url = process.env.MONGO_URL
+  if (!url) return null
+  try {
+    const m = /^mongodb(?:\+srv)?:\/\/([^:@\/]+)(?::([^@]+))?@([^\/?]+)/.exec(url)
+    if (!m) return { raw: url.slice(0, 12) + '…', shape: 'no-auth-or-localhost' }
+    return { user: m[1], host: m[3], hasPassword: !!m[2], passwordLen: m[2] ? m[2].length : 0 }
+  } catch { return null }
+}
+
 export async function GET() {
   const out = { ok: true, checks: {} }
 
@@ -37,6 +48,7 @@ export async function GET() {
 
   out.checks.env = {
     MONGO_URL: !!process.env.MONGO_URL,
+    MONGO_info: mongoInfo(),
     DB_NAME: !!process.env.DB_NAME,
     PAYPAL_CLIENT_ID: !!process.env.PAYPAL_CLIENT_ID,
     PAYPAL_CLIENT_ID_preview: redact(process.env.PAYPAL_CLIENT_ID),

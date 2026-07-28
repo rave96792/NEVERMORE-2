@@ -190,11 +190,43 @@ metadata:
 
 test_plan:
   current_focus:
-    - "Refactored per-endpoint App Router routes (POST /api/paypal/create-order, /api/cart/validate, /api/orders/[id]/status, /api/composite, /api/uploads[/filename], /api/health, /api/pricing[/quote], /api/contact, /api/email/test, /api/orders/[id])"
-    - "New POST /api/composite server-side sharp render (300 DPI transparent RGBA PNG)"
+    - "Sharp authoritative print-file render pipeline (renderOrder + /api/orders/[id]/rerender + capture-order integration)"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
+
+backend_sharp:
+  - task: "POST /api/orders/[id]/rerender — admin-token protected, idempotent sharp re-render"
+    implemented: true
+    working: true
+    file: "app/api/orders/[id]/rerender/route.js, lib/builder/renderOrder.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "Locally verified 401 unauth, 200 with token, idempotent (alreadySucceeded:true on second call without force). Render fails gracefully: bad sheetSizeId → status:pending_retry, attempt counter increments, audit log doc written to render_failures collection. Print PNG is 4200x7200 @ 300 DPI colorType=6 (RGBA transparent)."
+        - working: true
+          agent: "testing"
+          comment: "✅ VERIFIED on localhost:3000. Comprehensive test of rerender endpoint (22 tests, all passed): Auth tests → no token=401 ✓, wrong token=401 ✓. Success path → force:true renders 1 item, status=succeeded, attempt=1, renderCompletedAt present, printFileSource=sharp-authoritative, compositeUrl changed, compositeSize=117835 bytes ✓. Idempotency → second call without force returns alreadySucceeded=true, renderedCount=0 ✓. PNG verification → 4200x7200 pixels (14x24 @ 300 DPI), colorType=6 (RGBA transparent) ✓. Failure path → broken layout (99xNOPE) returns ok=false, status=pending_retry (attempt 2), error contains 'Unknown sheet size', printFileError present, audit doc written to render_failures collection ✓. After 3 attempts → status=failed ✓. Not-found → 404 for bogus order ID ✓. All regression tests passed (create-order HI/pickup, health, cart/validate, uploads) ✓. Sharp authoritative pipeline working perfectly."
+
+  - task: "capture-order integrates sharp render inline (never blocks payment)"
+    implemented: true
+    working: true
+    file: "app/api/paypal/capture-order/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "Payment success is committed to Mongo BEFORE sharp is invoked. If sharp fails, the order stays PAID and renderStatus is set to 'failed'/'pending_retry'; caller sees ok response with a `render` block describing status/attempt. maxDuration=60s. Cannot fully E2E test capture without a PayPal sandbox buyer approval; the render code path is fully exercised via the /api/orders/[id]/rerender endpoint (same function)."
+        - working: true
+          agent: "testing"
+          comment: "✅ VERIFIED via /api/orders/[id]/rerender endpoint which uses the same renderOrder() function. The capture-order route correctly wraps renderOrder() in try/catch (lines 52-63) so payment success is never blocked by render failures. Code review confirms: (1) Payment committed FIRST (line 38-47), (2) renderOrder() called with same params as rerender endpoint (line 54), (3) Any render exception caught and logged, order marked renderStatus=failed (line 56-62), (4) Response always returns success with render status block (line 76-87). Since renderOrder() is fully tested and working (all 22 tests passed including failure scenarios), and capture-order correctly wraps it non-blocking, this integration is verified as working. Cannot E2E test PayPal capture flow without buyer approval, but the critical render code path is proven functional."
+
+test_plan_previous_batch:
 
 backend_new:
   - task: "Refactored API — every endpoint moved from catch-all to its own App Router file, behavior-preserving"
@@ -232,43 +264,61 @@ test_plan_previous:
 agent_communication:
     - agent: "main"
       message: |
-        NEW BATCH: 6 user feature requests deployed. Please test the two NEW backend endpoints listed under
-        current_focus. Do NOT re-test earlier already-green endpoints unless explicitly needed.
+        NEW BATCH: Sharp authoritative print-file pipeline deployed. Please test the two NEW backend endpoints/integrations listed under current_focus (backend_sharp section).
 
-        Base URL for testing: https://www.nevermoredtf.com (Vercel prod, after the push completes)
-        Local fallback if prod deploy is still building: http://localhost:3000 inside container.
+        Base URL for testing: http://localhost:3000 (in-container)
+        Required env: ADMIN_TOKEN (present in /app/.env)
 
-        Required env for admin endpoint: ADMIN_TOKEN (present in /app/.env)
+        1. **POST /api/orders/[id]/rerender** — admin-token protected, idempotent sharp re-render
+             - Auth: no token → 401, wrong token → 401
+             - Success: force:true → 200 with {ok, status, renderedCount, totalItems, attempt, alreadySucceeded}
+             - Idempotency: second call without force → alreadySucceeded:true, renderedCount:0
+             - Order fields: renderStatus, renderAttempts, renderCompletedAt, items[].printFileSource, items[].compositeUrl (changed), items[].compositeSize
+             - PNG verification: 4200x7200 @ 300 DPI, colorType=6 (RGBA transparent)
+             - Failure path: broken layout → status:pending_retry (attempts < 3), status:failed (attempts >= 3), audit log in render_failures collection
+             - Not-found: bogus order ID → 404
 
-        1. **Sequential orderNumber + region shipping** — POST /api/paypal/create-order
-             Body (HI):     items:[{sheetId:'14x36',quantity:1}], shipping:{state:'HI', country:'US', ...}
-             Body (non-HI): items:[{sheetId:'14x24',quantity:2}], shipping:{state:'CA', country:'US', ...}
-             Expect: 201 with {orderID,internalOrderId,orderNumber,totals}
-                 - orderNumber must be an integer >= 100 and STRICTLY INCREASING between calls.
-                 - HI totals.shipping === 5, non-HI totals.shipping === 12.
-                 - HI totals.taxRate ≈ 0.04712 and totals.taxState === 'HI'.
-                 - non-HI totals.tax === 0.
-             Also: same invalid-payload cases as before must still return 400 (bad email, empty items, unknown sheetId).
+        2. **capture-order integrates sharp render inline** — never blocks payment
+             - Payment committed FIRST, then renderOrder() called in try/catch
+             - Cannot E2E test without PayPal buyer approval, but render code path is same as /api/orders/[id]/rerender
 
-        2. **Admin order status endpoint** — POST /api/orders/:id/status
-             Use the internalOrderId returned above.
-             (a) No token         → 401 {error:'Unauthorized'}
-             (b) Wrong status     → 400 {error:'status must be PROCESSING or SHIPPED'}
-             (c) PROCESSING       → 200 {ok:true,status:'PROCESSING',email:{...}}
-                  (email.ok may be false with a validation error if buyer email is a placeholder — that's fine, do
-                  NOT flag it as a failure. Just verify the transition itself succeeded in Mongo.)
-             (d) SHIPPED with trackingNumber+carrier → 200, order doc now has status=SHIPPED, trackingNumber, carrier.
-
-             Header format: "x-admin-token: <ADMIN_TOKEN>". Also accepts body.adminToken.
-
-        3. Regression sanity (must still return the same shape as before):
-             - GET /api/pricing (9 sheets present)
-             - POST /api/pricing/quote {sheetId:'14x60'} → unitPrice:26
-             - POST /api/cart/validate rejects tampered unitPrice
-             - GET /api/uploads/<known-uuid>.png returns image/png
+        3. Regression sanity:
+             - POST /api/paypal/create-order (ship HI, pickup)
+             - GET /api/health
+             - POST /api/cart/validate
+             - POST /api/uploads
 
         Do NOT touch frontend. Backend only.
         After you finish, update the two tasks' status_history with agent:"testing".
+    - agent: "testing"
+      message: |
+        ✅ SHARP AUTHORITATIVE PRINT-FILE PIPELINE VERIFIED - ALL TESTS PASSED (22/22)
+        
+        **TASK 1: POST /api/orders/[id]/rerender** ✅ WORKING
+        - Auth tests: no token→401 ✓, wrong token→401 ✓
+        - Success path: force:true renders 1 item, status=succeeded, attempt=1, renderCompletedAt present ✓
+        - Order fields: renderStatus=succeeded, renderAttempts=1, printFileSource=sharp-authoritative, compositeUrl changed, compositeSize=117835 bytes ✓
+        - Idempotency: second call without force returns alreadySucceeded=true, renderedCount=0 ✓
+        - PNG verification: 4200x7200 pixels (14x24 @ 300 DPI), colorType=6 (RGBA transparent) ✓
+        - Failure path: broken layout (99xNOPE) → ok=false, status=pending_retry (attempt 2), error contains 'Unknown sheet size', printFileError present ✓
+        - Audit log: render_failures collection contains doc with orderId, orderNumber, attempt, errors[] ✓
+        - After 3 attempts: status=failed, renderAttempts=4 ✓
+        - Not-found: bogus order ID → 404 ✓
+        
+        **TASK 2: capture-order integration** ✅ WORKING
+        - Code review confirms payment committed FIRST (line 38-47), renderOrder() wrapped in try/catch (line 52-63)
+        - Render failures never block payment success
+        - Same renderOrder() function tested above, proven functional in all scenarios
+        - Cannot E2E test PayPal capture without buyer approval, but render code path verified
+        
+        **REGRESSION TESTS** ✅ ALL PASSED
+        - POST /api/paypal/create-order (ship HI) → 201, orderNumber=115, shipping=$5, taxState=HI ✓
+        - POST /api/paypal/create-order (pickup) → 201, shipping=$0, taxState=HI ✓
+        - GET /api/health → 200, mongo.ok=true, paypal.ok=true ✓
+        - POST /api/cart/validate → 200, tampered price recomputed (9999→18) ✓
+        - POST /api/uploads → 200, GET roundtrip successful ✓
+        
+        Both tasks marked working=true, needs_retesting=false. Sharp pipeline ready for production.
     - agent: "testing"
       message: |
         ✅ REFACTOR VERIFICATION COMPLETE - ALL 36 TESTS PASSED (PART A: 30 regression tests, PART B: 6 new endpoint tests)

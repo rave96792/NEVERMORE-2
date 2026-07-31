@@ -17,6 +17,7 @@ export default function CheckoutPage() {
   const router = useRouter()
   const { items, hydrated, clear } = useCart()
   const [deliveryMethod, setDeliveryMethod] = useState('ship') // 'ship' | 'pickup'
+  const [rush, setRush] = useState(false)
   const [shipping, setShipping] = useState({
     fullName: '', email: '', phone: '',
     line1: '', line2: '', city: '', state: '', postalCode: '', country: 'US',
@@ -38,6 +39,7 @@ export default function CheckoutPage() {
             items,
             shipping: { state: shipping.state, country: shipping.country },
             deliveryMethod,
+            rush,
           }),
         })
         const j = await r.json()
@@ -48,7 +50,7 @@ export default function CheckoutPage() {
       finally { if (!cancelled) setValidating(false) }
     })()
     return () => { cancelled = true }
-  }, [items, hydrated, shipping.state, shipping.country, deliveryMethod])
+  }, [items, hydrated, shipping.state, shipping.country, deliveryMethod, rush])
 
   const isValid = useMemo(() => {
     const s = shipping
@@ -154,6 +156,31 @@ export default function CheckoutPage() {
               </section>
               )}
 
+              {/* Rush option — appears BEFORE delivery so buyers see the option first */}
+              <section className="rounded-2xl border border-white/10 bg-white/[0.03] p-6">
+                <h2 className="text-xs font-bold uppercase tracking-widest text-fuchsia-300">04 · Production speed</h2>
+                <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                  <button
+                    type="button"
+                    data-testid="rush-standard"
+                    onClick={() => setRush(false)}
+                    className={`rounded-xl border p-4 text-left transition ${!rush ? 'border-fuchsia-500 bg-fuchsia-500/10' : 'border-white/10 bg-white/[0.02] hover:border-white/25'}`}
+                  >
+                    <div className="text-sm font-bold">Standard production</div>
+                    <div className="mt-1 text-xs text-neutral-400">Ready in 3–5 business days · no extra charge</div>
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="rush-fast"
+                    onClick={() => setRush(true)}
+                    className={`rounded-xl border p-4 text-left transition ${rush ? 'border-amber-500 bg-amber-500/10' : 'border-white/10 bg-white/[0.02] hover:border-white/25'}`}
+                  >
+                    <div className="flex items-center gap-2 text-sm font-bold">Rush production <span className="rounded bg-amber-500/20 px-1.5 py-0.5 text-[10px] font-bold text-amber-300">+$30</span></div>
+                    <div className="mt-1 text-xs text-neutral-400">Bumped to the front of the queue · ready in 1 business day</div>
+                  </button>
+                </div>
+              </section>
+
               {/* Pickup details (only when Pickup is chosen) */}
               {deliveryMethod === 'pickup' && (
                 <section className="rounded-2xl border border-emerald-500/30 bg-emerald-500/[0.06] p-6">
@@ -189,6 +216,12 @@ export default function CheckoutPage() {
                   <span>{deliveryMethod === 'pickup' ? 'Pickup' : 'Shipping'}</span>
                   <span>{deliveryMethod === 'pickup' ? <span className="text-emerald-300 font-semibold">FREE</span> : (totals ? `$${totals.shipping.toFixed(2)}` : '…')}</span>
                 </div>
+                {rush && (
+                  <div className="flex justify-between text-amber-300">
+                    <span>Rush production</span>
+                    <span>+$30.00</span>
+                  </div>
+                )}
                 <div className="flex justify-between text-neutral-300">
                   <span>Tax {totals?.taxState === 'HI' ? '(HI 4.712%)' : ''}</span>
                   <span>${totals ? totals.tax.toFixed(2) : '0.00'}</span>
@@ -222,7 +255,7 @@ export default function CheckoutPage() {
                         setErr(null)
                         const r = await fetch('/api/paypal/create-order', {
                           method: 'POST', headers: { 'Content-Type': 'application/json' },
-                          body: JSON.stringify({ items, shipping, deliveryMethod }),
+                          body: JSON.stringify({ items, shipping, deliveryMethod, rush }),
                         })
                         const j = await r.json()
                         if (!r.ok) { toast.error(j.error || 'Failed to start checkout'); throw new Error(j.error) }

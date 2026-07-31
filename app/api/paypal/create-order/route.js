@@ -42,7 +42,8 @@ export async function POST(request) {
     }
     // Pickup is always in Hawaii → apply HI tax even without a shipping address
     const stateForTax = deliveryMethod === 'pickup' ? 'HI' : s.state
-    const totals = computeTotals({ subtotal: cartRes.subtotal, shippingState: stateForTax, shippingCountry: s.country || 'US', deliveryMethod })
+    const rush = body?.rush === true
+    const totals = computeTotals({ subtotal: cartRes.subtotal, shippingState: stateForTax, shippingCountry: s.country || 'US', deliveryMethod, rush })
     const internalOrderId = uuidv4()
 
     // 3. Create PayPal order with trusted total
@@ -76,6 +77,8 @@ export async function POST(request) {
         items: cartRes.items,
         subtotal: totals.subtotal,
         shipping_amount: totals.shipping,
+        rushFee: totals.rushFee,
+        rush: totals.rush,
         tax: totals.tax,
         taxRate: totals.taxRate,
         taxState: totals.taxState,

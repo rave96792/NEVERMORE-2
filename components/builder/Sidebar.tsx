@@ -51,7 +51,7 @@ export default function Sidebar(props: Props) {
               <span className="text-neutral-500 text-[10px]">{it.widthIn.toFixed(1)}×{it.heightIn.toFixed(1)}"</span>
               <button
                 onClick={(e) => { e.stopPropagation(); onRemove(it.id) }}
-                className="opacity-0 group-hover:opacity-100 rounded p-0.5 text-neutral-400 hover:text-red-400 hover:bg-red-500/10 transition"
+                className="opacity-100 md:opacity-0 md:group-hover:opacity-100 rounded p-1 text-neutral-400 hover:text-red-400 hover:bg-red-500/10 transition"
                 title="Delete this artwork"
                 aria-label="Delete"
                 data-testid={`b-layer-del-${it.id}`}

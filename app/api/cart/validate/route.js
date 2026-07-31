@@ -16,6 +16,7 @@ export async function POST(request) {
       shippingState: body?.shipping?.state,
       shippingCountry: body?.shipping?.country,
       deliveryMethod: body?.deliveryMethod,
+      rush: body?.rush,
     })
     return handleCORS(NextResponse.json({ ...result, ...totals }))
   } catch (e) {

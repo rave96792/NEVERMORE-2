@@ -199,7 +199,8 @@ export default function OrderPage() {
 
               <div className="mt-6 border-t border-white/10 pt-6 text-sm space-y-1">
                 <div className="flex justify-between text-neutral-400"><span>Subtotal</span><span>${order.subtotal?.toFixed(2)}</span></div>
-                <div className="flex justify-between text-neutral-400"><span>Shipping</span><span>{order.shipping_amount === 0 ? 'FREE' : `$${order.shipping_amount?.toFixed(2)}`}</span></div>
+                <div className="flex justify-between text-neutral-400"><span>{order.deliveryMethod === 'pickup' ? 'Pickup' : 'Shipping'}</span><span>{order.shipping_amount === 0 || order.deliveryMethod === 'pickup' ? 'FREE' : `$${order.shipping_amount?.toFixed(2)}`}</span></div>
+                {order.rush && <div className="flex justify-between text-amber-300"><span>Rush production</span><span>+${(order.rushFee ?? 30).toFixed(2)}</span></div>}
                 <div className="flex justify-between text-neutral-400"><span>Tax {order.taxState === 'HI' ? '(HI 4.712%)' : ''}</span><span>${order.tax?.toFixed(2)}</span></div>
                 <div className="mt-2 flex items-baseline justify-between border-t border-white/10 pt-3">
                   <span className="text-neutral-300">Total</span>

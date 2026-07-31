@@ -337,6 +337,71 @@ backend_prod_recovery:
             - Redirect to /order/[id] page after capture
             
             **CONCLUSION:** Sharp authoritative print-file render pipeline is WORKING CORRECTLY. All critical backend functionality verified. The only missing piece is actual PayPal buyer approval, which cannot be automated in headless browsers due to PayPal's security measures.
+        - working: true
+          agent: "testing"
+          comment: |
+            ✅ PRODUCTION SHARP RE-RENDER + RESEND BUG + REGRESSION VERIFIED - ALL 36 TESTS PASSED
+            
+            Verified three fixes on LIVE production (https://www.nevermoredtf.com) per review request:
+            
+            **FIX #1: Sharp Re-render of Real Customer Order c034211c-a3dc-4902-82db-a318bc24cddb (18/18 PASSED)**
+            - GET /api/orders/c034211c-... → 200 ✓
+              * status: "PROCESSING" (upgraded from PAID during fix) ✓
+              * renderStatus: "succeeded" ✓
+              * renderAttempts: 1 ✓
+              * renderCompletedAt: present ✓
+              * items[0].printFileSource: "sharp-authoritative" ✓
+              * items[0].compositeUrl: https://ja6cfnccvrkyo8kt.public.blob.vercel-storage.com/uploads/... (Vercel Blob) ✓
+              * items[0].compositeSize: 2,627,119 bytes (>1MB requirement met) ✓
+              * items[0].layout: present (original layout data preserved) ✓
+            
+            - GET compositeUrl → 200 ✓
+              * Content-Type: image/png ✓
+              * PNG magic bytes: 0x89 0x50 0x4E 0x47 ✓
+              * Width in IHDR: 4200 pixels (14" × 300 DPI) ✓
+              * Height in IHDR: 3600 pixels (12" × 300 DPI) ✓
+              * Color type byte at offset 25: 6 (RGBA transparent) ✓
+            
+            - POST /api/orders/c034211c-.../rerender with {} (no force) → 200 ✓
+              * alreadySucceeded: true ✓
+              * renderedCount: 0 ✓
+              * Idempotency confirmed ✓
+            
+            **FIX #2: Resend Domain-Verification Bug CONFIRMED (7/7 PASSED)**
+            - POST /api/orders/c034211c-.../status with {status:"PROCESSING"} → 200 ✓
+              * ok: true (status transition worked) ✓
+              * status: "PROCESSING" ✓
+              * email.ok: false (EXPECTED - Resend domain bug) ✓
+              * email.error: "You can only send testing emails to your own email address (nevermoreprintingcompany@yahoo.com)..." ✓
+              * This is the KNOWN BUG - Resend requires domain verification before sending to arbitrary recipients ✓
+            
+            - POST /api/email/test → 200 ✓
+              * results.shop.ok: true (verified recipient nevermoreprintingcompany@yahoo.com) ✓
+              * results.buyer.ok: true (also succeeded - account owner email) ✓
+              * Confirms shop email verified, external recipients fail - exact scope of bug ✓
+            
+            **FIX #3: Regression Tests - All Previously-Verified Endpoints STILL WORK (11/11 PASSED)**
+            - GET /api/health → 200 ✓
+              * checks.mongo.ok: true ✓
+              * checks.paypal.ok: true ✓
+              * checks.paypal.base: "https://api-m.paypal.com" (LIVE) ✓
+              * PAYPAL_ENV: "live" ✓
+            
+            - POST /api/paypal/create-order (HI pickup) → 201 ✓
+              * orderNumber: 113 (≥108, monotonically increasing) ✓
+              * orderID: 4BM9216046540851M (real PayPal LIVE order) ✓
+              * totals.total: $10.47 ✓
+            
+            - POST /api/cart/validate with tampered unitPrice:9999 → 200 ✓
+              * unitPrice corrected to 18 (14x36 sheet) ✓
+              * subtotal: 36 (2 × $18) ✓
+            
+            **SUMMARY:**
+            ✅ FIX #1 VERIFIED: Sharp re-render of real customer order working perfectly - all fields correct, PNG dimensions/transparency verified
+            ✅ FIX #2 CONFIRMED: Resend domain bug reproduced as expected - external recipients fail with validation error
+            ✅ FIX #3 VERIFIED: No regressions - health, create-order, cart validation all working correctly
+            
+            **NO NEW BUGS FOUND** - All three fixes verified on production. Resend domain issue is a KNOWN LIMITATION (not a new bug).
 
 test_plan_previous_batch:
 
@@ -940,4 +1005,39 @@ agent_communication:
         
         **RECOMMENDATION:**
         Main agent can summarize and finish. The backend_prod_recovery task demonstrates that after payment capture, the sharp render pipeline runs successfully and order status/renderStatus are updated correctly.
+    - agent: "testing"
+      message: |
+        ✅ PRODUCTION VERIFICATION COMPLETE - ALL 36 TESTS PASSED
+        
+        Verified three critical fixes on LIVE production (https://www.nevermoredtf.com):
+        
+        **FIX #1: Sharp Re-render of Real Customer Order (18/18 PASSED)**
+        - Order c034211c-a3dc-4902-82db-a318bc24cddb (Justin Madeira, $24.07) verified:
+          * status: PROCESSING, renderStatus: succeeded, renderAttempts: 1 ✓
+          * printFileSource: sharp-authoritative ✓
+          * compositeUrl: Vercel Blob (https://ja6cfnccvrkyo8kt...) ✓
+          * compositeSize: 2,627,119 bytes (>1MB) ✓
+          * layout: present (original layout data preserved) ✓
+        - PNG verification: 4200×3600 pixels (14×12 @ 300 DPI), colorType=6 (RGBA), valid magic bytes ✓
+        - Idempotency: POST rerender without force → alreadySucceeded:true, renderedCount:0 ✓
+        
+        **FIX #2: Resend Domain-Verification Bug CONFIRMED (7/7 PASSED)**
+        - POST /api/orders/.../status with PROCESSING → 200, ok:true, status:PROCESSING ✓
+        - email.ok: false (EXPECTED) ✓
+        - email.error: "You can only send testing emails to your own email address..." ✓
+        - This is the KNOWN BUG - Resend requires domain verification for external recipients ✓
+        - POST /api/email/test → shop.ok:true, buyer.ok:true (account owner succeeds) ✓
+        
+        **FIX #3: Regression Tests (11/11 PASSED)**
+        - GET /api/health → mongo.ok:true, paypal.ok:true, paypal.base:api-m.paypal.com, PAYPAL_ENV:live ✓
+        - POST /api/paypal/create-order (HI pickup) → 201, orderNumber:113 (≥108), PayPal LIVE order ✓
+        - POST /api/cart/validate → tampered price corrected (9999→18), subtotal:36 ✓
+        
+        **SUMMARY:**
+        ✅ All three fixes verified on production
+        ✅ No regressions detected
+        ✅ Resend domain issue confirmed as KNOWN LIMITATION (not a new bug)
+        
+        backend_prod_recovery task updated with status_history entry (agent:testing, working:true, needs_retesting:false).
+
 

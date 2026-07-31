@@ -1,573 +1,494 @@
 #!/usr/bin/env python3
 """
-Production recovery verification for Nevermore DTF
-Tests against LIVE production: https://www.nevermoredtf.com
+Production Backend Testing - Sharp Re-render + Resend Bug + Regression
+Testing against https://www.nevermoredtf.com
 """
 
 import requests
-import json
+import struct
 import sys
-from io import BytesIO
 
-# PRODUCTION BASE URL
+# Production base URL
 BASE_URL = "https://www.nevermoredtf.com"
+
+# Admin token for production (from review request)
 ADMIN_TOKEN = "nevermore-admin-2026-XvT9pWq3Rz1KcJ7bH2Fs4Ye8Da5Nh6Uk"
 
-def print_test(name, passed, details=""):
+# Real customer order ID from review request
+CUSTOMER_ORDER_ID = "c034211c-a3dc-4902-82db-a318bc24cddb"
+
+def print_test_header(title):
+    print(f"\n{'='*80}")
+    print(f"  {title}")
+    print(f"{'='*80}\n")
+
+def print_test_result(test_name, passed, details=""):
     status = "✅ PASS" if passed else "❌ FAIL"
-    print(f"{status} | {name}")
+    print(f"{status} | {test_name}")
     if details:
-        print(f"    {details}")
+        print(f"       {details}")
 
-def test_health():
-    """TEST A — Sanity / Health"""
-    print("\n=== TEST A: Health Endpoint ===")
+def parse_png_ihdr(png_bytes):
+    """Parse PNG IHDR chunk to extract width, height, color type"""
     try:
-        resp = requests.get(f"{BASE_URL}/api/health", timeout=30)
-        print(f"Status: {resp.status_code}")
-        data = resp.json()
-        print(f"Response: {json.dumps(data, indent=2)}")
+        # PNG signature: 89 50 4E 47 0D 0A 1A 0A (8 bytes)
+        if png_bytes[:8] != b'\x89PNG\r\n\x1a\n':
+            return None, None, None
         
-        # Assert status 200
-        test_passed = resp.status_code == 200
-        print_test("Health returns 200", test_passed)
+        # IHDR chunk starts at byte 8
+        # Chunk structure: 4 bytes length, 4 bytes type, data, 4 bytes CRC
+        # IHDR is always first chunk after signature
+        ihdr_length = struct.unpack('>I', png_bytes[8:12])[0]
+        ihdr_type = png_bytes[12:16]
         
-        # Assert ok: true
-        test_passed = data.get("ok") == True
-        print_test("ok: true", test_passed, f"Got: {data.get('ok')}")
+        if ihdr_type != b'IHDR':
+            return None, None, None
         
-        # Assert mongo.ok: true
-        mongo_ok = data.get("checks", {}).get("mongo", {}).get("ok")
-        print_test("checks.mongo.ok: true", mongo_ok == True, f"Got: {mongo_ok}")
+        # IHDR data: width(4), height(4), bit_depth(1), color_type(1), ...
+        ihdr_data = png_bytes[16:16+ihdr_length]
+        width = struct.unpack('>I', ihdr_data[0:4])[0]
+        height = struct.unpack('>I', ihdr_data[4:8])[0]
+        color_type = ihdr_data[9]
         
-        # Assert paypal.ok: true
-        paypal_ok = data.get("checks", {}).get("paypal", {}).get("ok")
-        print_test("checks.paypal.ok: true", paypal_ok == True, f"Got: {paypal_ok}")
-        
-        # Assert paypal.base: "https://api-m.paypal.com" (LIVE)
-        paypal_base = data.get("checks", {}).get("paypal", {}).get("base")
-        test_passed = paypal_base == "https://api-m.paypal.com"
-        print_test("checks.paypal.base: 'https://api-m.paypal.com' (LIVE)", test_passed, f"Got: {paypal_base}")
-        
-        # Assert PAYPAL_ENV: "live"
-        paypal_env = data.get("checks", {}).get("env", {}).get("PAYPAL_ENV")
-        test_passed = paypal_env == "live"
-        print_test("checks.env.PAYPAL_ENV: 'live'", test_passed, f"Got: {paypal_env}")
-        
-        # Assert PAYPAL_CLIENT_ID: true
-        client_id = data.get("checks", {}).get("env", {}).get("PAYPAL_CLIENT_ID")
-        print_test("checks.env.PAYPAL_CLIENT_ID: true", client_id == True, f"Got: {client_id}")
-        
-        # Assert RESEND_API_KEY: true
-        resend = data.get("checks", {}).get("env", {}).get("RESEND_API_KEY")
-        print_test("checks.env.RESEND_API_KEY: true", resend == True, f"Got: {resend}")
-        
-        # Assert ADMIN_TOKEN_set: true
-        admin_token = data.get("checks", {}).get("env", {}).get("ADMIN_TOKEN_set")
-        print_test("checks.env.ADMIN_TOKEN_set: true", admin_token == True, f"Got: {admin_token}")
-        
-        # Assert mongo user
-        mongo_user = data.get("checks", {}).get("env", {}).get("MONGO_info", {}).get("user")
-        test_passed = mongo_user == "nevermoreprintingcompany_db_user"
-        print_test("checks.env.MONGO_info.user: 'nevermoreprintingcompany_db_user'", test_passed, f"Got: {mongo_user}")
-        
-        # Assert mongo host
-        mongo_host = data.get("checks", {}).get("env", {}).get("MONGO_info", {}).get("host")
-        test_passed = mongo_host == "nevermoredtf.vseirgo.mongodb.net"
-        print_test("checks.env.MONGO_info.host: 'nevermoredtf.vseirgo.mongodb.net'", test_passed, f"Got: {mongo_host}")
-        
-        # Assert mongo passwordLen: 24 (NOT 16)
-        password_len = data.get("checks", {}).get("env", {}).get("MONGO_info", {}).get("passwordLen")
-        test_passed = password_len == 24
-        print_test("checks.env.MONGO_info.passwordLen: 24 (NOT 16)", test_passed, f"Got: {password_len}")
-        
-        return True
+        return width, height, color_type
     except Exception as e:
-        print(f"❌ FAIL | Health endpoint error: {e}")
-        return False
+        print(f"       Error parsing PNG: {e}")
+        return None, None, None
 
-def test_pricing():
-    """TEST B — Core commerce endpoints"""
-    print("\n=== TEST B: Core Commerce Endpoints ===")
-    try:
-        # 1. GET /api/pricing
-        resp = requests.get(f"{BASE_URL}/api/pricing", timeout=30)
-        print(f"GET /api/pricing - Status: {resp.status_code}")
-        data = resp.json()
-        sheets = data.get("sheets", [])
-        test_passed = resp.status_code == 200 and len(sheets) == 9
-        print_test("GET /api/pricing returns 200 with 9 sheets", test_passed, f"Got {len(sheets)} sheets")
-        
-        # Verify 14x12 ($10) and 14x120 ($40)
-        sheet_14x12 = next((s for s in sheets if s.get("id") == "14x12"), None)
-        sheet_14x120 = next((s for s in sheets if s.get("id") == "14x120"), None)
-        test_passed = sheet_14x12 and sheet_14x12.get("price") == 10
-        print_test("14x12 sheet costs $10", test_passed, f"Got: ${sheet_14x12.get('price') if sheet_14x12 else 'N/A'}")
-        test_passed = sheet_14x120 and sheet_14x120.get("price") == 40
-        print_test("14x120 sheet costs $40", test_passed, f"Got: ${sheet_14x120.get('price') if sheet_14x120 else 'N/A'}")
-        
-        # 2. POST /api/pricing/quote
-        resp = requests.post(f"{BASE_URL}/api/pricing/quote", 
-                            json={"sheetId": "14x60"}, 
-                            timeout=30)
-        print(f"POST /api/pricing/quote - Status: {resp.status_code}")
-        data = resp.json()
-        unit_price = data.get("unitPrice")
-        test_passed = resp.status_code == 200 and unit_price == 26
-        print_test("POST /api/pricing/quote {sheetId:'14x60'} returns unitPrice:26", test_passed, f"Got: {unit_price}")
-        
-        # 3. POST /api/cart/validate with tampered unitPrice
-        resp = requests.post(f"{BASE_URL}/api/cart/validate",
-                            json={
-                                "items": [{
-                                    "sheetId": "14x36",
-                                    "quantity": 2,
-                                    "unitPrice": 9999
-                                }]
-                            },
-                            timeout=30)
-        print(f"POST /api/cart/validate - Status: {resp.status_code}")
-        data = resp.json()
-        recomputed_price = data.get("items", [{}])[0].get("unitPrice")
-        test_passed = resp.status_code == 200 and recomputed_price == 18
-        print_test("POST /api/cart/validate recomputes tampered unitPrice 9999→18", test_passed, f"Got: {recomputed_price}")
-        
-        return True
-    except Exception as e:
-        print(f"❌ FAIL | Pricing endpoints error: {e}")
-        return False
+# ============================================================================
+# FIX #1: Sharp re-render of real customer order
+# ============================================================================
 
-def test_create_order():
-    """TEST C — Create-order live PayPal"""
-    print("\n=== TEST C: Create-Order Live PayPal ===")
+def test_fix1_sharp_rerender():
+    print_test_header("FIX #1: Sharp Re-render of Customer Order c034211c-...")
     
-    # 1. HI pickup
-    print("\n--- C1: HI Pickup ---")
+    all_passed = True
+    
+    # Test 1.1: GET order and verify all fields
+    print("\n[Test 1.1] GET order and verify sharp render fields")
     try:
-        resp = requests.post(f"{BASE_URL}/api/paypal/create-order",
-                            json={
-                                "items": [{"sheetId": "14x12", "quantity": 1}],
-                                "shipping": {
-                                    "fullName": "Recovery Test",
-                                    "email": "nevermoreprintingcompany@yahoo.com",
-                                    "phone": "808-555-0100"
-                                },
-                                "deliveryMethod": "pickup"
-                            },
-                            timeout=30)
-        print(f"Status: {resp.status_code}")
-        data = resp.json()
-        print(f"Response: {json.dumps(data, indent=2)}")
+        url = f"{BASE_URL}/api/orders/{CUSTOMER_ORDER_ID}"
+        response = requests.get(url, timeout=30)
         
-        test_passed = resp.status_code == 201
-        print_test("HI pickup returns 201", test_passed)
+        if response.status_code != 200:
+            print_test_result("GET order returns 200", False, f"Got {response.status_code}")
+            all_passed = False
+            return all_passed
         
-        order_id = data.get("orderID")
-        test_passed = order_id and len(order_id) > 10
-        print_test("orderID present (PayPal order)", test_passed, f"Got: {order_id}")
+        print_test_result("GET order returns 200", True)
         
-        internal_order_id = data.get("internalOrderId")
-        test_passed = internal_order_id and len(internal_order_id) == 36  # UUID format
-        print_test("internalOrderId present (UUID)", test_passed, f"Got: {internal_order_id}")
+        order = response.json()
         
-        order_number = data.get("orderNumber")
-        test_passed = order_number and order_number >= 108
-        print_test("orderNumber >= 108", test_passed, f"Got: {order_number}")
+        # Verify status
+        status_ok = order.get('status') == 'PROCESSING'
+        print_test_result("status: 'PROCESSING'", status_ok, f"Got: {order.get('status')}")
+        all_passed = all_passed and status_ok
         
-        totals = data.get("totals", {})
-        test_passed = (totals.get("subtotal") == 10 and 
-                      totals.get("shipping") == 0 and
-                      abs(totals.get("tax", 0) - 0.47) < 0.01 and
-                      abs(totals.get("total", 0) - 10.47) < 0.01 and
-                      abs(totals.get("taxRate", 0) - 0.04712) < 0.0001 and
-                      totals.get("taxState") == "HI" and
-                      totals.get("deliveryMethod") == "pickup")
-        print_test("Totals correct for HI pickup", test_passed, 
-                  f"subtotal:{totals.get('subtotal')}, shipping:{totals.get('shipping')}, tax:{totals.get('tax')}, total:{totals.get('total')}, taxRate:{totals.get('taxRate')}, taxState:{totals.get('taxState')}, deliveryMethod:{totals.get('deliveryMethod')}")
+        # Verify renderStatus
+        render_status_ok = order.get('renderStatus') == 'succeeded'
+        print_test_result("renderStatus: 'succeeded'", render_status_ok, f"Got: {order.get('renderStatus')}")
+        all_passed = all_passed and render_status_ok
         
-        # Store for admin tests
-        global test_internal_order_id
-        test_internal_order_id = internal_order_id
+        # Verify renderAttempts
+        render_attempts_ok = order.get('renderAttempts') == 1
+        print_test_result("renderAttempts: 1", render_attempts_ok, f"Got: {order.get('renderAttempts')}")
+        all_passed = all_passed and render_attempts_ok
         
-    except Exception as e:
-        print(f"❌ FAIL | HI pickup error: {e}")
-    
-    # 2. HI ship
-    print("\n--- C2: HI Ship ---")
-    try:
-        resp = requests.post(f"{BASE_URL}/api/paypal/create-order",
-                            json={
-                                "items": [{"sheetId": "14x24", "quantity": 1}],
-                                "shipping": {
-                                    "fullName": "Recovery Test",
-                                    "email": "nevermoreprintingcompany@yahoo.com",
-                                    "line1": "1 Ala Moana",
-                                    "city": "Honolulu",
-                                    "state": "HI",
-                                    "postalCode": "96813",
-                                    "country": "US"
-                                },
-                                "deliveryMethod": "ship"
-                            },
-                            timeout=30)
-        print(f"Status: {resp.status_code}")
-        data = resp.json()
+        # Verify renderCompletedAt present
+        render_completed_ok = order.get('renderCompletedAt') is not None
+        print_test_result("renderCompletedAt present", render_completed_ok)
+        all_passed = all_passed and render_completed_ok
         
-        test_passed = resp.status_code == 201
-        print_test("HI ship returns 201", test_passed)
+        # Verify items[0] fields
+        items = order.get('items', [])
+        if not items:
+            print_test_result("items array not empty", False, "No items found")
+            all_passed = False
+            return all_passed
         
-        totals = data.get("totals", {})
-        test_passed = totals.get("shipping") == 5 and totals.get("deliveryMethod") == "ship"
-        print_test("HI ship has shipping:$5", test_passed, f"shipping:{totals.get('shipping')}, deliveryMethod:{totals.get('deliveryMethod')}")
+        item = items[0]
         
-        test_passed = totals.get("taxState") == "HI" and totals.get("tax", 0) > 0
-        print_test("HI ship has HI tax applied", test_passed, f"taxState:{totals.get('taxState')}, tax:{totals.get('tax')}")
+        # printFileSource
+        print_file_source_ok = item.get('printFileSource') == 'sharp-authoritative'
+        print_test_result("items[0].printFileSource: 'sharp-authoritative'", print_file_source_ok, f"Got: {item.get('printFileSource')}")
+        all_passed = all_passed and print_file_source_ok
         
-    except Exception as e:
-        print(f"❌ FAIL | HI ship error: {e}")
-    
-    # 3. CA ship
-    print("\n--- C3: CA Ship ---")
-    try:
-        resp = requests.post(f"{BASE_URL}/api/paypal/create-order",
-                            json={
-                                "items": [{"sheetId": "14x24", "quantity": 2}],
-                                "shipping": {
-                                    "fullName": "Recovery Test",
-                                    "email": "nevermoreprintingcompany@yahoo.com",
-                                    "line1": "1 Market St",
-                                    "city": "Los Angeles",
-                                    "state": "CA",
-                                    "postalCode": "90001",
-                                    "country": "US"
-                                },
-                                "deliveryMethod": "ship"
-                            },
-                            timeout=30)
-        print(f"Status: {resp.status_code}")
-        data = resp.json()
+        # compositeUrl
+        composite_url = item.get('compositeUrl', '')
+        composite_url_ok = composite_url.startswith('https://ja6cfnccvrkyo8kt.public.blob.vercel-storage.com/uploads/')
+        print_test_result("items[0].compositeUrl starts with Vercel Blob URL", composite_url_ok, f"Got: {composite_url[:60]}...")
+        all_passed = all_passed and composite_url_ok
         
-        test_passed = resp.status_code == 201
-        print_test("CA ship returns 201", test_passed)
+        # compositeSize
+        composite_size = item.get('compositeSize', 0)
+        composite_size_ok = composite_size > 1_000_000
+        print_test_result("items[0].compositeSize > 1MB", composite_size_ok, f"Got: {composite_size:,} bytes")
+        all_passed = all_passed and composite_size_ok
         
-        totals = data.get("totals", {})
-        test_passed = totals.get("shipping") == 12
-        print_test("CA ship has shipping:$12", test_passed, f"Got: {totals.get('shipping')}")
+        # layout present
+        layout_ok = item.get('layout') is not None
+        print_test_result("items[0].layout present (original layout data)", layout_ok)
+        all_passed = all_passed and layout_ok
         
-        test_passed = totals.get("tax") == 0 and totals.get("taxState") == "CA"
-        print_test("CA ship has tax:$0, taxState:CA", test_passed, f"tax:{totals.get('tax')}, taxState:{totals.get('taxState')}")
+        # Test 1.2: GET the compositeUrl and verify PNG properties
+        print("\n[Test 1.2] GET compositeUrl and verify PNG properties")
         
-    except Exception as e:
-        print(f"❌ FAIL | CA ship error: {e}")
-    
-    # 4. Sanity checks - bad payloads
-    print("\n--- C4: Invalid Payloads ---")
-    try:
-        # Bad email
-        resp = requests.post(f"{BASE_URL}/api/paypal/create-order",
-                            json={
-                                "items": [{"sheetId": "14x12", "quantity": 1}],
-                                "shipping": {
-                                    "fullName": "Test",
-                                    "email": "not-an-email",
-                                    "phone": "808-555-0100"
-                                },
-                                "deliveryMethod": "pickup"
-                            },
-                            timeout=30)
-        test_passed = resp.status_code == 400
-        print_test("Bad email returns 400", test_passed, f"Got: {resp.status_code}")
-        
-        # Empty items
-        resp = requests.post(f"{BASE_URL}/api/paypal/create-order",
-                            json={
-                                "items": [],
-                                "shipping": {
-                                    "fullName": "Test",
-                                    "email": "test@example.com",
-                                    "phone": "808-555-0100"
-                                },
-                                "deliveryMethod": "pickup"
-                            },
-                            timeout=30)
-        test_passed = resp.status_code == 400
-        print_test("Empty items returns 400", test_passed, f"Got: {resp.status_code}")
-        
-        # Missing line1 on ship
-        resp = requests.post(f"{BASE_URL}/api/paypal/create-order",
-                            json={
-                                "items": [{"sheetId": "14x12", "quantity": 1}],
-                                "shipping": {
-                                    "fullName": "Test",
-                                    "email": "test@example.com",
-                                    "city": "Honolulu",
-                                    "state": "HI",
-                                    "postalCode": "96813",
-                                    "country": "US"
-                                },
-                                "deliveryMethod": "ship"
-                            },
-                            timeout=30)
-        test_passed = resp.status_code == 400
-        print_test("Missing line1 on ship returns 400", test_passed, f"Got: {resp.status_code}")
-        
-    except Exception as e:
-        print(f"❌ FAIL | Invalid payload tests error: {e}")
-
-def test_admin_endpoints():
-    """TEST D — Admin endpoints"""
-    print("\n=== TEST D: Admin Endpoints ===")
-    
-    if 'test_internal_order_id' not in globals():
-        print("⚠️  SKIP | No internal order ID from create-order test")
-        return
-    
-    order_id = test_internal_order_id
-    
-    # 1. POST /api/orders/[id]/rerender with NO token
-    print("\n--- D1: Rerender without token ---")
-    try:
-        resp = requests.post(f"{BASE_URL}/api/orders/{order_id}/rerender",
-                            json={"force": True},
-                            timeout=30)
-        print(f"Status: {resp.status_code}")
-        test_passed = resp.status_code == 401
-        print_test("Rerender without token returns 401", test_passed, f"Got: {resp.status_code}")
-    except Exception as e:
-        print(f"❌ FAIL | Rerender no token error: {e}")
-    
-    # 2. POST /api/orders/[id]/rerender with correct token
-    print("\n--- D2: Rerender with correct token ---")
-    try:
-        resp = requests.post(f"{BASE_URL}/api/orders/{order_id}/rerender",
-                            json={"force": True},
-                            headers={"x-admin-token": ADMIN_TOKEN},
-                            timeout=60)
-        print(f"Status: {resp.status_code}")
-        data = resp.json()
-        print(f"Response: {json.dumps(data, indent=2)}")
-        
-        test_passed = resp.status_code == 200
-        print_test("Rerender with token returns 200", test_passed)
-        
-        test_passed = data.get("ok") == True
-        print_test("ok: true", test_passed, f"Got: {data.get('ok')}")
-        
-        test_passed = data.get("status") == "succeeded"
-        print_test("status: 'succeeded'", test_passed, f"Got: {data.get('status')}")
-        
-        test_passed = data.get("renderedCount") == 0
-        print_test("renderedCount: 0 (no layout in order)", test_passed, f"Got: {data.get('renderedCount')}")
-        
-        test_passed = data.get("totalItems") == 1
-        print_test("totalItems: 1", test_passed, f"Got: {data.get('totalItems')}")
-        
-        test_passed = data.get("attempt") == 1
-        print_test("attempt: 1", test_passed, f"Got: {data.get('attempt')}")
-        
-    except Exception as e:
-        print(f"❌ FAIL | Rerender with token error: {e}")
-    
-    # 3. POST /api/orders/[id]/status with correct token
-    print("\n--- D3: Status update with token ---")
-    try:
-        resp = requests.post(f"{BASE_URL}/api/orders/{order_id}/status",
-                            json={"status": "PROCESSING"},
-                            headers={"x-admin-token": ADMIN_TOKEN},
-                            timeout=30)
-        print(f"Status: {resp.status_code}")
-        data = resp.json()
-        print(f"Response: {json.dumps(data, indent=2)}")
-        
-        test_passed = resp.status_code == 200
-        print_test("Status update returns 200", test_passed)
-        
-        test_passed = data.get("ok") == True
-        print_test("ok: true", test_passed, f"Got: {data.get('ok')}")
-        
-        test_passed = data.get("status") == "PROCESSING"
-        print_test("status: 'PROCESSING'", test_passed, f"Got: {data.get('status')}")
-        
-        # Email may fail with Resend validation - that's fine
-        email_result = data.get("email", {})
-        print(f"    Email result: {email_result}")
-        
-    except Exception as e:
-        print(f"❌ FAIL | Status update error: {e}")
-    
-    # 4. GET /api/orders/[id] to verify updates
-    print("\n--- D4: Get order to verify updates ---")
-    try:
-        resp = requests.get(f"{BASE_URL}/api/orders/{order_id}", timeout=30)
-        print(f"Status: {resp.status_code}")
-        data = resp.json()
-        
-        test_passed = resp.status_code == 200
-        print_test("GET order returns 200", test_passed)
-        
-        test_passed = data.get("status") == "PROCESSING"
-        print_test("Order status is PROCESSING", test_passed, f"Got: {data.get('status')}")
-        
-        test_passed = data.get("renderStatus") == "succeeded"
-        print_test("Order renderStatus is succeeded", test_passed, f"Got: {data.get('renderStatus')}")
-        
-    except Exception as e:
-        print(f"❌ FAIL | Get order error: {e}")
-
-def test_uploads_composite():
-    """TEST E — Uploads + composite"""
-    print("\n=== TEST E: Uploads + Composite ===")
-    
-    # 1. POST /api/uploads with a small PNG
-    print("\n--- E1: Upload PNG ---")
-    try:
-        # Create a minimal PNG (1x1 transparent)
-        png_data = bytes([
-            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,  # PNG signature
-            0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,  # IHDR chunk
-            0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,  # 1x1
-            0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4,  # RGBA
-            0x89, 0x00, 0x00, 0x00, 0x0A, 0x49, 0x44, 0x41,  # IDAT chunk
-            0x54, 0x78, 0x9C, 0x63, 0x00, 0x01, 0x00, 0x00,
-            0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00,
-            0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE,  # IEND chunk
-            0x42, 0x60, 0x82
-        ])
-        
-        files = {'file': ('test.png', BytesIO(png_data), 'image/png')}
-        resp = requests.post(f"{BASE_URL}/api/uploads", files=files, timeout=30)
-        print(f"Status: {resp.status_code}")
-        data = resp.json()
-        print(f"Response: {json.dumps(data, indent=2)}")
-        
-        test_passed = resp.status_code == 200
-        print_test("Upload returns 200", test_passed)
-        
-        artwork_url = data.get("artworkUrl")
-        test_passed = artwork_url and len(artwork_url) > 0
-        print_test("artworkUrl present", test_passed, f"Got: {artwork_url}")
-        
-        # GET the uploaded file
-        if artwork_url:
-            # Handle both absolute and relative URLs
-            if artwork_url.startswith('http'):
-                get_url = artwork_url
+        try:
+            png_response = requests.get(composite_url, timeout=30)
+            
+            if png_response.status_code != 200:
+                print_test_result("GET compositeUrl returns 200", False, f"Got {png_response.status_code}")
+                all_passed = False
             else:
-                get_url = f"{BASE_URL}{artwork_url}"
+                print_test_result("GET compositeUrl returns 200", True)
+                
+                # Content-Type
+                content_type = png_response.headers.get('Content-Type', '')
+                content_type_ok = content_type == 'image/png'
+                print_test_result("Content-Type: image/png", content_type_ok, f"Got: {content_type}")
+                all_passed = all_passed and content_type_ok
+                
+                # PNG magic bytes
+                png_bytes = png_response.content
+                magic_ok = png_bytes[:4] == b'\x89PNG'
+                print_test_result("PNG magic bytes (0x89 0x50 0x4E 0x47)", magic_ok)
+                all_passed = all_passed and magic_ok
+                
+                # Parse IHDR
+                width, height, color_type = parse_png_ihdr(png_bytes)
+                
+                # Width = 4200 (14" × 300 DPI)
+                width_ok = width == 4200
+                print_test_result("Width in IHDR = 4200 (14\" × 300 DPI)", width_ok, f"Got: {width}")
+                all_passed = all_passed and width_ok
+                
+                # Height = 3600 (12" × 300 DPI)
+                height_ok = height == 3600
+                print_test_result("Height in IHDR = 3600 (12\" × 300 DPI)", height_ok, f"Got: {height}")
+                all_passed = all_passed and height_ok
+                
+                # Color type = 6 (RGBA transparent)
+                color_type_ok = color_type == 6
+                print_test_result("Color type = 6 (RGBA transparent)", color_type_ok, f"Got: {color_type}")
+                all_passed = all_passed and color_type_ok
+        
+        except Exception as e:
+            print_test_result("GET compositeUrl", False, f"Exception: {e}")
+            all_passed = False
+        
+        # Test 1.3: Idempotency check - POST rerender without force
+        print("\n[Test 1.3] Idempotency check - POST rerender without force")
+        
+        try:
+            rerender_url = f"{BASE_URL}/api/orders/{CUSTOMER_ORDER_ID}/rerender"
+            headers = {'x-admin-token': ADMIN_TOKEN, 'Content-Type': 'application/json'}
+            rerender_response = requests.post(rerender_url, json={}, headers=headers, timeout=30)
             
-            resp = requests.get(get_url, timeout=30)
-            test_passed = resp.status_code == 200 and resp.headers.get('content-type') == 'image/png'
-            print_test("GET uploaded file returns 200 image/png", test_passed, 
-                      f"Status: {resp.status_code}, Content-Type: {resp.headers.get('content-type')}")
-            
-            # Store for composite test
-            global test_artwork_url
-            test_artwork_url = artwork_url
-        
-    except Exception as e:
-        print(f"❌ FAIL | Upload error: {e}")
-    
-    # 2. POST /api/composite with valid layout
-    print("\n--- E2: Composite render ---")
-    try:
-        if 'test_artwork_url' not in globals():
-            print("⚠️  SKIP | No artwork URL from upload test")
-            return
-        
-        resp = requests.post(f"{BASE_URL}/api/composite",
-                            json={
-                                "layout": {
-                                    "sheetSizeId": "14x24",
-                                    "items": [{
-                                        "artworkUrl": test_artwork_url,
-                                        "xIn": 1,
-                                        "yIn": 1,
-                                        "widthIn": 4,
-                                        "heightIn": 4,
-                                        "rotationDeg": 0,
-                                        "zIndex": 0
-                                    }]
-                                }
-                            },
-                            timeout=60)
-        print(f"Status: {resp.status_code}")
-        data = resp.json()
-        print(f"Response: {json.dumps(data, indent=2)}")
-        
-        test_passed = resp.status_code == 200
-        print_test("Composite returns 200", test_passed)
-        
-        composite_url = data.get("artworkUrl")
-        test_passed = composite_url and len(composite_url) > 0
-        print_test("Composite artworkUrl present", test_passed, f"Got: {composite_url}")
-        
-        # GET the composite
-        if composite_url:
-            if composite_url.startswith('http'):
-                get_url = composite_url
+            if rerender_response.status_code != 200:
+                print_test_result("POST rerender returns 200", False, f"Got {rerender_response.status_code}")
+                all_passed = False
             else:
-                get_url = f"{BASE_URL}{composite_url}"
-            
-            resp = requests.get(get_url, timeout=30)
-            test_passed = resp.status_code == 200 and resp.headers.get('content-type') == 'image/png'
-            print_test("GET composite returns 200 image/png", test_passed,
-                      f"Status: {resp.status_code}, Content-Type: {resp.headers.get('content-type')}")
-            
-            # Check dimensions (should be 4200×7200 for 14×24 @ 300 DPI)
-            if resp.status_code == 200:
-                content = resp.content
-                # PNG IHDR is at bytes 16-24 (width) and 20-24 (height)
-                if len(content) > 24:
-                    width = int.from_bytes(content[16:20], 'big')
-                    height = int.from_bytes(content[20:24], 'big')
-                    test_passed = width == 4200 and height == 7200
-                    print_test("Composite dimensions 4200×7200 (14×24 @ 300 DPI)", test_passed,
-                              f"Got: {width}×{height}")
+                print_test_result("POST rerender returns 200", True)
+                
+                rerender_data = rerender_response.json()
+                
+                # alreadySucceeded: true
+                already_succeeded_ok = rerender_data.get('alreadySucceeded') == True
+                print_test_result("alreadySucceeded: true", already_succeeded_ok, f"Got: {rerender_data.get('alreadySucceeded')}")
+                all_passed = all_passed and already_succeeded_ok
+                
+                # renderedCount: 0
+                rendered_count_ok = rerender_data.get('renderedCount') == 0
+                print_test_result("renderedCount: 0", rendered_count_ok, f"Got: {rerender_data.get('renderedCount')}")
+                all_passed = all_passed and rendered_count_ok
         
+        except Exception as e:
+            print_test_result("POST rerender idempotency", False, f"Exception: {e}")
+            all_passed = False
+    
     except Exception as e:
-        print(f"❌ FAIL | Composite error: {e}")
+        print_test_result("FIX #1 overall", False, f"Exception: {e}")
+        all_passed = False
+    
+    return all_passed
 
-def test_contact():
-    """TEST F — /api/contact"""
-    print("\n=== TEST F: Contact Endpoint ===")
+# ============================================================================
+# FIX #2: Confirm Resend domain-verification bug
+# ============================================================================
+
+def test_fix2_resend_bug():
+    print_test_header("FIX #2: Confirm Resend Domain-Verification Bug")
+    
+    all_passed = True
+    
+    # Test 2.1: POST status endpoint and verify email failure
+    print("\n[Test 2.1] POST /api/orders/.../status with PROCESSING - verify email.ok=false")
+    
     try:
-        resp = requests.post(f"{BASE_URL}/api/contact",
-                            json={
-                                "name": "Recovery Test",
-                                "email": "nevermoreprintingcompany@yahoo.com",
-                                "subject": "Recovery smoke test",
-                                "message": "Testing after Vercel env-var fix — please ignore"
-                            },
-                            timeout=30)
-        print(f"Status: {resp.status_code}")
-        data = resp.json()
-        print(f"Response: {json.dumps(data, indent=2)}")
+        status_url = f"{BASE_URL}/api/orders/{CUSTOMER_ORDER_ID}/status"
+        headers = {'x-admin-token': ADMIN_TOKEN, 'Content-Type': 'application/json'}
+        body = {'status': 'PROCESSING'}
         
-        test_passed = resp.status_code == 200
-        print_test("Contact returns 200", test_passed)
+        response = requests.post(status_url, json=body, headers=headers, timeout=30)
         
-        test_passed = data.get("ok") == True
-        print_test("ok: true", test_passed, f"Got: {data.get('ok')}")
-        
+        if response.status_code != 200:
+            print_test_result("POST status returns 200", False, f"Got {response.status_code}")
+            all_passed = False
+        else:
+            print_test_result("POST status returns 200", True)
+            
+            data = response.json()
+            
+            # ok: true (status transition worked)
+            ok_ok = data.get('ok') == True
+            print_test_result("ok: true (status transition worked)", ok_ok, f"Got: {data.get('ok')}")
+            all_passed = all_passed and ok_ok
+            
+            # status: PROCESSING
+            status_ok = data.get('status') == 'PROCESSING'
+            print_test_result("status: 'PROCESSING'", status_ok, f"Got: {data.get('status')}")
+            all_passed = all_passed and status_ok
+            
+            # email.ok: false
+            email = data.get('email', {})
+            email_ok_false = email.get('ok') == False
+            print_test_result("email.ok: false (Resend domain bug)", email_ok_false, f"Got: {email.get('ok')}")
+            all_passed = all_passed and email_ok_false
+            
+            # email.error contains "You can only send testing emails" or "verify a domain"
+            email_error = email.get('error', '')
+            error_contains_expected = ('You can only send testing emails' in email_error or 
+                                      'verify a domain' in email_error.lower())
+            print_test_result("email.error contains expected Resend validation message", error_contains_expected, 
+                            f"Got: {email_error[:100]}...")
+            all_passed = all_passed and error_contains_expected
+    
     except Exception as e:
-        print(f"❌ FAIL | Contact error: {e}")
+        print_test_result("POST status email test", False, f"Exception: {e}")
+        all_passed = False
+    
+    # Test 2.2: POST /api/email/test and check results
+    print("\n[Test 2.2] POST /api/email/test - verify shop vs buyer email behavior")
+    
+    try:
+        test_url = f"{BASE_URL}/api/email/test"
+        response = requests.post(test_url, timeout=30)
+        
+        if response.status_code != 200:
+            print_test_result("POST /api/email/test returns 200", False, f"Got {response.status_code}")
+            all_passed = False
+        else:
+            print_test_result("POST /api/email/test returns 200", True)
+            
+            data = response.json()
+            results = data.get('results', {})
+            
+            # Shop email (nevermoreprintingcompany@yahoo.com) should succeed
+            shop = results.get('shop', {})
+            shop_ok = shop.get('ok')
+            print_test_result("results.shop.ok (verified recipient)", shop_ok, 
+                            f"Got: {shop_ok}, id: {shop.get('id', 'N/A')}")
+            
+            # Buyer email behavior (may fail if not verified)
+            buyer = results.get('buyer', {})
+            buyer_ok = buyer.get('ok')
+            buyer_error = buyer.get('error', '')
+            print_test_result("results.buyer.ok", buyer_ok, 
+                            f"Got: {buyer_ok}, error: {buyer_error[:80] if buyer_error else 'N/A'}")
+            
+            # Note: This is informational - the bug is that external recipients fail
+            if shop_ok and not buyer_ok:
+                print("       ℹ️  CONFIRMED: Shop email succeeds, buyer email fails - this is the Resend domain bug")
+    
+    except Exception as e:
+        print_test_result("POST /api/email/test", False, f"Exception: {e}")
+        all_passed = False
+    
+    return all_passed
+
+# ============================================================================
+# FIX #3: Regression tests - previously-verified endpoints
+# ============================================================================
+
+def test_fix3_regression():
+    print_test_header("FIX #3: Regression Tests - Previously-Verified Endpoints")
+    
+    all_passed = True
+    
+    # Test 3.1: GET /api/health
+    print("\n[Test 3.1] GET /api/health")
+    
+    try:
+        url = f"{BASE_URL}/api/health"
+        response = requests.get(url, timeout=30)
+        
+        if response.status_code != 200:
+            print_test_result("GET /api/health returns 200", False, f"Got {response.status_code}")
+            all_passed = False
+        else:
+            print_test_result("GET /api/health returns 200", True)
+            
+            data = response.json()
+            checks = data.get('checks', {})
+            
+            # mongo.ok: true
+            mongo = checks.get('mongo', {})
+            mongo_ok = mongo.get('ok') == True
+            print_test_result("checks.mongo.ok: true", mongo_ok, f"Got: {mongo.get('ok')}")
+            all_passed = all_passed and mongo_ok
+            
+            # paypal.ok: true
+            paypal = checks.get('paypal', {})
+            paypal_ok = paypal.get('ok') == True
+            print_test_result("checks.paypal.ok: true", paypal_ok, f"Got: {paypal.get('ok')}")
+            all_passed = all_passed and paypal_ok
+            
+            # paypal.base: api-m.paypal.com
+            paypal_base = paypal.get('base', '')
+            paypal_base_ok = 'api-m.paypal.com' in paypal_base
+            print_test_result("checks.paypal.base: api-m.paypal.com (LIVE)", paypal_base_ok, f"Got: {paypal_base}")
+            all_passed = all_passed and paypal_base_ok
+            
+            # PAYPAL_ENV: 'live'
+            env = checks.get('env', {})
+            paypal_env = env.get('PAYPAL_ENV', '')
+            paypal_env_ok = paypal_env == 'live'
+            print_test_result("PAYPAL_ENV: 'live'", paypal_env_ok, f"Got: {paypal_env}")
+            all_passed = all_passed and paypal_env_ok
+    
+    except Exception as e:
+        print_test_result("GET /api/health", False, f"Exception: {e}")
+        all_passed = False
+    
+    # Test 3.2: POST /api/paypal/create-order (HI pickup)
+    print("\n[Test 3.2] POST /api/paypal/create-order (HI pickup)")
+    
+    try:
+        url = f"{BASE_URL}/api/paypal/create-order"
+        body = {
+            'items': [{'sheetId': '14x12', 'quantity': 1, 'unitPrice': 10}],
+            'shipping': {
+                'fullName': 'Test Buyer Production',
+                'email': 'testbuyer@example.com',
+                'line1': '123 Ala Moana Blvd',
+                'city': 'Honolulu',
+                'state': 'HI',
+                'postalCode': '96813',
+                'country': 'US'
+            },
+            'deliveryMethod': 'pickup'
+        }
+        
+        response = requests.post(url, json=body, timeout=30)
+        
+        if response.status_code != 201:
+            print_test_result("POST create-order returns 201", False, f"Got {response.status_code}: {response.text[:200]}")
+            all_passed = False
+        else:
+            print_test_result("POST create-order returns 201", True)
+            
+            data = response.json()
+            
+            # orderNumber present and increasing
+            order_number = data.get('orderNumber')
+            order_number_ok = order_number is not None and order_number >= 108
+            print_test_result("orderNumber present and >= 108", order_number_ok, f"Got: {order_number}")
+            all_passed = all_passed and order_number_ok
+            
+            # orderID present (PayPal LIVE order)
+            order_id = data.get('orderID')
+            order_id_ok = order_id is not None and len(order_id) > 0
+            print_test_result("orderID present (PayPal LIVE)", order_id_ok, f"Got: {order_id}")
+            all_passed = all_passed and order_id_ok
+            
+            # totals present
+            totals = data.get('totals', {})
+            totals_ok = totals.get('total') is not None
+            print_test_result("totals present", totals_ok, f"total: ${totals.get('total')}")
+            all_passed = all_passed and totals_ok
+    
+    except Exception as e:
+        print_test_result("POST create-order", False, f"Exception: {e}")
+        all_passed = False
+    
+    # Test 3.3: POST /api/cart/validate with tampered unitPrice
+    print("\n[Test 3.3] POST /api/cart/validate with tampered unitPrice")
+    
+    try:
+        url = f"{BASE_URL}/api/cart/validate"
+        body = {
+            'items': [
+                {'sheetId': '14x36', 'quantity': 2, 'unitPrice': 9999}  # Tampered price
+            ]
+        }
+        
+        response = requests.post(url, json=body, timeout=30)
+        
+        if response.status_code != 200:
+            print_test_result("POST cart/validate returns 200", False, f"Got {response.status_code}")
+            all_passed = False
+        else:
+            print_test_result("POST cart/validate returns 200", True)
+            
+            data = response.json()
+            items = data.get('items', [])
+            
+            if items:
+                corrected_price = items[0].get('unitPrice')
+                # 14x36 should be $18
+                price_corrected = corrected_price == 18
+                print_test_result("unitPrice corrected from 9999 to 18", price_corrected, f"Got: {corrected_price}")
+                all_passed = all_passed and price_corrected
+                
+                subtotal = data.get('subtotal')
+                subtotal_ok = subtotal == 36  # 2 × $18
+                print_test_result("subtotal: 36 (2 × $18)", subtotal_ok, f"Got: {subtotal}")
+                all_passed = all_passed and subtotal_ok
+            else:
+                print_test_result("items array not empty", False)
+                all_passed = False
+    
+    except Exception as e:
+        print_test_result("POST cart/validate", False, f"Exception: {e}")
+        all_passed = False
+    
+    return all_passed
+
+# ============================================================================
+# Main test runner
+# ============================================================================
 
 def main():
-    print("=" * 80)
-    print("PRODUCTION RECOVERY VERIFICATION")
-    print(f"Base URL: {BASE_URL}")
-    print("=" * 80)
+    print("\n" + "="*80)
+    print("  PRODUCTION BACKEND VERIFICATION")
+    print("  Base URL: https://www.nevermoredtf.com")
+    print("  Testing: Sharp Re-render + Resend Bug + Regression")
+    print("="*80)
     
-    test_health()
-    test_pricing()
-    test_create_order()
-    test_admin_endpoints()
-    test_uploads_composite()
-    test_contact()
+    results = {}
     
-    print("\n" + "=" * 80)
-    print("PRODUCTION RECOVERY VERIFICATION COMPLETE")
-    print("=" * 80)
+    # Run all test suites
+    results['FIX #1: Sharp Re-render'] = test_fix1_sharp_rerender()
+    results['FIX #2: Resend Bug'] = test_fix2_resend_bug()
+    results['FIX #3: Regression'] = test_fix3_regression()
+    
+    # Summary
+    print_test_header("SUMMARY")
+    
+    all_passed = True
+    for suite_name, passed in results.items():
+        status = "✅ PASS" if passed else "❌ FAIL"
+        print(f"{status} | {suite_name}")
+        all_passed = all_passed and passed
+    
+    print("\n" + "="*80)
+    if all_passed:
+        print("  ✅ ALL TESTS PASSED")
+    else:
+        print("  ❌ SOME TESTS FAILED")
+    print("="*80 + "\n")
+    
+    return 0 if all_passed else 1
 
-if __name__ == "__main__":
-    main()
+if __name__ == '__main__':
+    sys.exit(main())

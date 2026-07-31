@@ -402,6 +402,64 @@ backend_prod_recovery:
             ✅ FIX #3 VERIFIED: No regressions - health, create-order, cart validation all working correctly
             
             **NO NEW BUGS FOUND** - All three fixes verified on production. Resend domain issue is a KNOWN LIMITATION (not a new bug).
+        - working: "PARTIAL"
+          agent: "testing"
+          comment: |
+            ⚠️ RESEND EMAIL FIX VERIFICATION - PARTIAL (2/4 TESTS PASSED)
+            
+            Attempted to verify the Resend email fix on PRODUCTION (https://www.nevermoredtf.com) per review request.
+            The fix: RESEND_API_KEY on Vercel Production was upgraded from testing-mode to full-access production key.
+            
+            **TEST 1: Send PROCESSING email to real customer (Justin Madeira) - ❌ BLOCKED**
+            - POST /api/orders/c034211c-a3dc-4902-82db-a318bc24cddb/status with {status:"PROCESSING"}
+            - Result: HTTP 401 Unauthorized
+            - Reason: Production ADMIN_TOKEN is different from local /app/.env value
+            - The production ADMIN_TOKEN was recreated via Vercel API (per test_result.md line 215) but the value is not documented in /app/memory/test_credentials.md or any accessible location
+            - Cannot verify if email.ok is now TRUE for external recipients without admin access
+            
+            **TEST 2: /api/email/test regression check - ✅ PASSED**
+            - POST https://www.nevermoredtf.com/api/email/test → 200
+            - results.shop.ok: true, id: "8bc1a734-835d-49d8-9f70-f2802cd13d9d" ✓
+            - results.buyer.ok: true, id: "36ad48a4-b3a5-4967-a0ca-8ca2233bf6ac" ✓
+            - Both self-send emails working correctly (to nevermoreprintingcompany@yahoo.com)
+            
+            **TEST 3: /api/health regression check - ✅ PASSED**
+            - GET https://www.nevermoredtf.com/api/health → 200
+            - checks.mongo.ok: true ✓
+            - checks.paypal.ok: true, base: "https://api-m.paypal.com" ✓
+            - checks.env.PAYPAL_ENV: "live" ✓
+            - checks.env.RESEND_API_KEY: true ✓
+            - checks.env.ADMIN_TOKEN_set: true ✓
+            - checks.env.MONGO_info.host: "nevermoredtf.vseirgo.mongodb.net" ✓
+            - MAIL_FROM_runtime: NOT PRESENT (correctly removed) ✓
+            - MAIL_SHOP_TO_runtime: NOT PRESENT (correctly removed) ✓
+            - Health endpoint clean, no diagnostic pollution
+            
+            **TEST 4: Send SHIPPED email and verify tracking - ❌ BLOCKED**
+            - POST /api/orders/c034211c-a3dc-4902-82db-a318bc24cddb/status with {status:"SHIPPED",...}
+            - Result: HTTP 401 Unauthorized
+            - Same issue as TEST 1 - missing production ADMIN_TOKEN
+            
+            **SUMMARY:**
+            - ✅ Regression tests passed: /api/email/test and /api/health working correctly
+            - ✅ Health endpoint cleaned up (temporary diagnostic fields removed)
+            - ❌ Cannot verify the PRIMARY FIX (external recipient emails) without production ADMIN_TOKEN
+            - The local ADMIN_TOKEN (nvm_7D5LacmJbKHsr7u7rhERWyyYTWyw4cOV) does not match production
+            
+            **RECOMMENDATION FOR MAIN AGENT:**
+            1. Document the production ADMIN_TOKEN in /app/memory/test_credentials.md, OR
+            2. Update Vercel Production ADMIN_TOKEN to match local /app/.env value, OR
+            3. Provide the production ADMIN_TOKEN value for testing
+            
+            **WHAT WAS VERIFIED:**
+            - Self-send emails (to shop's own address) work correctly
+            - Health endpoint shows all systems operational
+            - No regressions in non-admin endpoints
+            
+            **WHAT COULD NOT BE VERIFIED:**
+            - Email delivery to external recipients (Justin Madeira, jbmadeira85@gmail.com)
+            - Whether email.ok is now TRUE (was FALSE before the fix)
+            - SHIPPED status email with tracking info
 
 test_plan_previous_batch:
 
@@ -1041,3 +1099,40 @@ agent_communication:
         backend_prod_recovery task updated with status_history entry (agent:testing, working:true, needs_retesting:false).
 
 
+
+    - agent: "testing"
+      message: |
+        ⚠️ RESEND EMAIL FIX VERIFICATION - PARTIAL (2/4 TESTS PASSED)
+        
+        Attempted to verify the Resend email fix on PRODUCTION per review request.
+        The fix: RESEND_API_KEY upgraded from testing-mode to full-access production key.
+        
+        **TESTS COMPLETED:**
+        ✅ TEST 2: /api/email/test → 200, shop.ok=true, buyer.ok=true (self-send working)
+        ✅ TEST 3: /api/health → 200, all systems operational, diagnostic pollution removed
+        
+        **TESTS BLOCKED:**
+        ❌ TEST 1: Send PROCESSING email to Justin Madeira → 401 Unauthorized
+        ❌ TEST 4: Send SHIPPED email with tracking → 401 Unauthorized
+        
+        **ROOT CAUSE:**
+        Production ADMIN_TOKEN is different from local /app/.env value (nvm_7D5LacmJbKHsr7u7rhERWyyYTWyw4cOV).
+        The production token was recreated via Vercel API (per line 215 of this file) but the value is not documented in /app/memory/test_credentials.md or any accessible location.
+        
+        **WHAT WAS VERIFIED:**
+        - Self-send emails work correctly (to shop's own address)
+        - Health endpoint clean and operational
+        - No regressions in non-admin endpoints
+        
+        **WHAT COULD NOT BE VERIFIED (PRIMARY FIX):**
+        - Email delivery to external recipients (Justin Madeira, jbmadeira85@gmail.com)
+        - Whether email.ok is now TRUE for external recipients (was FALSE before the fix)
+        - SHIPPED status email with tracking info
+        
+        **RECOMMENDATION FOR MAIN AGENT:**
+        1. Document production ADMIN_TOKEN in /app/memory/test_credentials.md, OR
+        2. Update Vercel Production ADMIN_TOKEN to match local /app/.env, OR
+        3. Provide production ADMIN_TOKEN value for testing, OR
+        4. Use Vercel CLI (`vercel env pull`) to sync production env vars to local
+        
+        The core Resend fix (upgrading API key) cannot be fully verified without admin access to trigger status-change emails to external recipients.

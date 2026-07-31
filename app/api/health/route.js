@@ -50,6 +50,8 @@ export async function GET() {
     MONGO_URL: !!process.env.MONGO_URL,
     MONGO_info: mongoInfo(),
     DB_NAME: !!process.env.DB_NAME,
+    MAIL_FROM_runtime: process.env.MAIL_FROM || null,  // TEMP DIAGNOSTIC — remove after debug
+    MAIL_SHOP_TO_runtime: process.env.MAIL_SHOP_TO || null,
     PAYPAL_CLIENT_ID: !!process.env.PAYPAL_CLIENT_ID,
     PAYPAL_CLIENT_ID_preview: redact(process.env.PAYPAL_CLIENT_ID),
     NEXT_PUBLIC_PAYPAL_CLIENT_ID_preview: redact(process.env.NEXT_PUBLIC_PAYPAL_CLIENT_ID),

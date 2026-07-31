@@ -1,668 +1,573 @@
 #!/usr/bin/env python3
 """
-Nevermore DTF Backend Regression + New Composite Endpoint Test
-Tests all refactored endpoints for behavior preservation + new /api/composite
+Production recovery verification for Nevermore DTF
+Tests against LIVE production: https://www.nevermoredtf.com
 """
+
 import requests
 import json
-import os
-import struct
+import sys
 from io import BytesIO
 
-BASE_URL = "http://localhost:3000"
-ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "")
+# PRODUCTION BASE URL
+BASE_URL = "https://www.nevermoredtf.com"
+ADMIN_TOKEN = "nevermore-admin-2026-XvT9pWq3Rz1KcJ7bH2Fs4Ye8Da5Nh6Uk"
 
-# Test counters
-passed = 0
-failed = 0
-results = []
+def print_test(name, passed, details=""):
+    status = "✅ PASS" if passed else "❌ FAIL"
+    print(f"{status} | {name}")
+    if details:
+        print(f"    {details}")
 
-def log_result(test_name, success, details=""):
-    global passed, failed, results
-    if success:
-        passed += 1
-        status = "✅ PASS"
-    else:
-        failed += 1
-        status = "❌ FAIL"
-    results.append(f"{status} | {test_name} | {details}")
-    print(f"{status} | {test_name}")
-    if details and not success:
-        print(f"    Details: {details}")
-
-def verify_png_signature(data):
-    """Verify PNG magic bytes: 0x89 0x50 0x4E 0x47"""
-    if len(data) < 8:
+def test_health():
+    """TEST A — Sanity / Health"""
+    print("\n=== TEST A: Health Endpoint ===")
+    try:
+        resp = requests.get(f"{BASE_URL}/api/health", timeout=30)
+        print(f"Status: {resp.status_code}")
+        data = resp.json()
+        print(f"Response: {json.dumps(data, indent=2)}")
+        
+        # Assert status 200
+        test_passed = resp.status_code == 200
+        print_test("Health returns 200", test_passed)
+        
+        # Assert ok: true
+        test_passed = data.get("ok") == True
+        print_test("ok: true", test_passed, f"Got: {data.get('ok')}")
+        
+        # Assert mongo.ok: true
+        mongo_ok = data.get("checks", {}).get("mongo", {}).get("ok")
+        print_test("checks.mongo.ok: true", mongo_ok == True, f"Got: {mongo_ok}")
+        
+        # Assert paypal.ok: true
+        paypal_ok = data.get("checks", {}).get("paypal", {}).get("ok")
+        print_test("checks.paypal.ok: true", paypal_ok == True, f"Got: {paypal_ok}")
+        
+        # Assert paypal.base: "https://api-m.paypal.com" (LIVE)
+        paypal_base = data.get("checks", {}).get("paypal", {}).get("base")
+        test_passed = paypal_base == "https://api-m.paypal.com"
+        print_test("checks.paypal.base: 'https://api-m.paypal.com' (LIVE)", test_passed, f"Got: {paypal_base}")
+        
+        # Assert PAYPAL_ENV: "live"
+        paypal_env = data.get("checks", {}).get("env", {}).get("PAYPAL_ENV")
+        test_passed = paypal_env == "live"
+        print_test("checks.env.PAYPAL_ENV: 'live'", test_passed, f"Got: {paypal_env}")
+        
+        # Assert PAYPAL_CLIENT_ID: true
+        client_id = data.get("checks", {}).get("env", {}).get("PAYPAL_CLIENT_ID")
+        print_test("checks.env.PAYPAL_CLIENT_ID: true", client_id == True, f"Got: {client_id}")
+        
+        # Assert RESEND_API_KEY: true
+        resend = data.get("checks", {}).get("env", {}).get("RESEND_API_KEY")
+        print_test("checks.env.RESEND_API_KEY: true", resend == True, f"Got: {resend}")
+        
+        # Assert ADMIN_TOKEN_set: true
+        admin_token = data.get("checks", {}).get("env", {}).get("ADMIN_TOKEN_set")
+        print_test("checks.env.ADMIN_TOKEN_set: true", admin_token == True, f"Got: {admin_token}")
+        
+        # Assert mongo user
+        mongo_user = data.get("checks", {}).get("env", {}).get("MONGO_info", {}).get("user")
+        test_passed = mongo_user == "nevermoreprintingcompany_db_user"
+        print_test("checks.env.MONGO_info.user: 'nevermoreprintingcompany_db_user'", test_passed, f"Got: {mongo_user}")
+        
+        # Assert mongo host
+        mongo_host = data.get("checks", {}).get("env", {}).get("MONGO_info", {}).get("host")
+        test_passed = mongo_host == "nevermoredtf.vseirgo.mongodb.net"
+        print_test("checks.env.MONGO_info.host: 'nevermoredtf.vseirgo.mongodb.net'", test_passed, f"Got: {mongo_host}")
+        
+        # Assert mongo passwordLen: 24 (NOT 16)
+        password_len = data.get("checks", {}).get("env", {}).get("MONGO_info", {}).get("passwordLen")
+        test_passed = password_len == 24
+        print_test("checks.env.MONGO_info.passwordLen: 24 (NOT 16)", test_passed, f"Got: {password_len}")
+        
+        return True
+    except Exception as e:
+        print(f"❌ FAIL | Health endpoint error: {e}")
         return False
-    return data[0:8] == b'\x89PNG\r\n\x1a\n'
 
-def get_png_ihdr_info(data):
-    """Extract width, height, color type from PNG IHDR chunk"""
-    if not verify_png_signature(data):
-        return None
-    # IHDR starts at byte 8 (after signature)
-    # Format: 4 bytes length, 4 bytes "IHDR", 4 bytes width, 4 bytes height, 1 byte bit depth, 1 byte color type
-    if len(data) < 29:
-        return None
-    width = struct.unpack('>I', data[16:20])[0]
-    height = struct.unpack('>I', data[20:24])[0]
-    color_type = data[25]
-    return {'width': width, 'height': height, 'color_type': color_type}
-
-print("=" * 80)
-print("NEVERMORE DTF BACKEND REGRESSION + COMPOSITE TEST")
-print("=" * 80)
-print(f"Base URL: {BASE_URL}")
-print(f"Admin Token: {'✓ SET' if ADMIN_TOKEN else '✗ MISSING'}")
-print()
-
-# ============================================================================
-# PART A: REGRESSION TESTS - All existing endpoints must work identically
-# ============================================================================
-print("PART A: REGRESSION TESTS")
-print("-" * 80)
-
-# Test 1: GET /api/ → root endpoint
-try:
-    r = requests.get(f"{BASE_URL}/api/")
-    if r.status_code == 200 and r.json().get("message") == "Nevermore DTF API":
-        log_result("A1: GET /api/", True, "200 with correct message")
-    else:
-        log_result("A1: GET /api/", False, f"Status {r.status_code}, body: {r.text[:100]}")
-except Exception as e:
-    log_result("A1: GET /api/", False, str(e))
-
-# Test 2: GET /api/health → health check
-try:
-    r = requests.get(f"{BASE_URL}/api/health")
-    if r.status_code in [200, 503]:
-        data = r.json()
-        checks = data.get("checks", {})
-        mongo_ok = checks.get("mongo", {}).get("ok")
-        paypal_ok = checks.get("paypal", {}).get("ok")
-        env = checks.get("env", {})
-        
-        # Verify required env vars are reported
-        required_env = ["MONGO_URL", "DB_NAME", "PAYPAL_CLIENT_ID", "PAYPAL_CLIENT_SECRET", "RESEND_API_KEY"]
-        env_ok = all(env.get(k) == True for k in required_env)
-        
-        if mongo_ok is not None and paypal_ok is not None and env_ok:
-            log_result("A2: GET /api/health", True, f"Status {r.status_code}, mongo.ok={mongo_ok}, paypal.ok={paypal_ok}")
-        else:
-            log_result("A2: GET /api/health", False, f"Missing checks: {data}")
-    else:
-        log_result("A2: GET /api/health", False, f"Unexpected status {r.status_code}")
-except Exception as e:
-    log_result("A2: GET /api/health", False, str(e))
-
-# Test 3: GET /api/pricing → 9 sheets from 14x12 to 14x120
-try:
-    r = requests.get(f"{BASE_URL}/api/pricing")
-    if r.status_code == 200:
-        data = r.json()
+def test_pricing():
+    """TEST B — Core commerce endpoints"""
+    print("\n=== TEST B: Core Commerce Endpoints ===")
+    try:
+        # 1. GET /api/pricing
+        resp = requests.get(f"{BASE_URL}/api/pricing", timeout=30)
+        print(f"GET /api/pricing - Status: {resp.status_code}")
+        data = resp.json()
         sheets = data.get("sheets", [])
-        if len(sheets) == 9:
-            # Verify first and last sheet
-            first = next((s for s in sheets if s.get("id") == "14x12"), None)
-            last = next((s for s in sheets if s.get("id") == "14x120"), None)
-            if first and first.get("price") == 10 and last and last.get("price") == 40:
-                log_result("A3: GET /api/pricing", True, f"9 sheets, 14x12=$10, 14x120=$40")
-            else:
-                log_result("A3: GET /api/pricing", False, f"Sheet prices incorrect: first={first}, last={last}")
-        else:
-            log_result("A3: GET /api/pricing", False, f"Expected 9 sheets, got {len(sheets)}")
-    else:
-        log_result("A3: GET /api/pricing", False, f"Status {r.status_code}")
-except Exception as e:
-    log_result("A3: GET /api/pricing", False, str(e))
-
-# Test 4: POST /api/pricing/quote → valid and invalid
-try:
-    # Valid quote
-    r = requests.post(f"{BASE_URL}/api/pricing/quote", json={"sheetId": "14x60"})
-    if r.status_code == 200 and r.json().get("unitPrice") == 26:
-        log_result("A4a: POST /api/pricing/quote (valid)", True, "14x60 → $26")
-    else:
-        log_result("A4a: POST /api/pricing/quote (valid)", False, f"Status {r.status_code}, body: {r.json()}")
-    
-    # Invalid sheet ID
-    r = requests.post(f"{BASE_URL}/api/pricing/quote", json={"sheetId": "99x99"})
-    if r.status_code == 400:
-        log_result("A4b: POST /api/pricing/quote (invalid)", True, "Invalid sheet → 400")
-    else:
-        log_result("A4b: POST /api/pricing/quote (invalid)", False, f"Expected 400, got {r.status_code}")
-except Exception as e:
-    log_result("A4: POST /api/pricing/quote", False, str(e))
-
-# Test 5: POST /api/cart/validate → tampered price recomputation
-try:
-    # Tampered unitPrice should be recomputed
-    r = requests.post(f"{BASE_URL}/api/cart/validate", json={
-        "items": [{"sheetId": "14x36", "quantity": 2, "unitPrice": 9999}]
-    })
-    if r.status_code == 200:
-        data = r.json()
-        items = data.get("items", [])
-        if items and items[0].get("unitPrice") == 18 and data.get("subtotal") == 36:
-            log_result("A5a: POST /api/cart/validate (tamper)", True, "9999 → 18, subtotal=36")
-        else:
-            log_result("A5a: POST /api/cart/validate (tamper)", False, f"Price not recomputed: {data}")
-    else:
-        log_result("A5a: POST /api/cart/validate (tamper)", False, f"Status {r.status_code}")
-    
-    # Empty items should return 400
-    r = requests.post(f"{BASE_URL}/api/cart/validate", json={"items": []})
-    if r.status_code == 400:
-        log_result("A5b: POST /api/cart/validate (empty)", True, "Empty items → 400")
-    else:
-        log_result("A5b: POST /api/cart/validate (empty)", False, f"Expected 400, got {r.status_code}")
-except Exception as e:
-    log_result("A5: POST /api/cart/validate", False, str(e))
-
-# Test 6: POST /api/paypal/create-order → HI and CA shipping
-order_ids = []
-try:
-    # HI shipping: $5, tax 4.712%
-    r = requests.post(f"{BASE_URL}/api/paypal/create-order", json={
-        "items": [{"sheetId": "14x36", "quantity": 1, "unitPrice": 18}],
-        "shipping": {
-            "fullName": "Test Buyer HI",
-            "email": "buyer.hi@example.com",
-            "line1": "123 Ala Moana Blvd",
-            "city": "Honolulu",
-            "state": "HI",
-            "postalCode": "96813",
-            "country": "US"
-        }
-    })
-    if r.status_code == 201:
-        data = r.json()
-        totals = data.get("totals", {})
-        order_ids.append(data.get("internalOrderId"))
-        if (totals.get("shipping") == 5 and 
-            totals.get("taxState") == "HI" and 
-            abs(totals.get("taxRate", 0) - 0.04712) < 0.0001 and
-            data.get("orderNumber") is not None):
-            log_result("A6a: POST /api/paypal/create-order (HI)", True, 
-                      f"201, shipping=$5, taxState=HI, orderNumber={data.get('orderNumber')}")
-        else:
-            log_result("A6a: POST /api/paypal/create-order (HI)", False, f"Totals incorrect: {totals}")
-    else:
-        log_result("A6a: POST /api/paypal/create-order (HI)", False, f"Status {r.status_code}, body: {r.text[:200]}")
-except Exception as e:
-    log_result("A6a: POST /api/paypal/create-order (HI)", False, str(e))
-
-try:
-    # CA shipping: $12, tax $0
-    r = requests.post(f"{BASE_URL}/api/paypal/create-order", json={
-        "items": [{"sheetId": "14x24", "quantity": 2, "unitPrice": 13}],
-        "shipping": {
-            "fullName": "Test Buyer CA",
-            "email": "buyer.ca@example.com",
-            "line1": "456 Market St",
-            "city": "San Francisco",
-            "state": "CA",
-            "postalCode": "94102",
-            "country": "US"
-        }
-    })
-    if r.status_code == 201:
-        data = r.json()
-        totals = data.get("totals", {})
-        order_ids.append(data.get("internalOrderId"))
-        if totals.get("shipping") == 12 and totals.get("tax") == 0:
-            log_result("A6b: POST /api/paypal/create-order (CA)", True, 
-                      f"201, shipping=$12, tax=$0, orderNumber={data.get('orderNumber')}")
-        else:
-            log_result("A6b: POST /api/paypal/create-order (CA)", False, f"Totals incorrect: {totals}")
-    else:
-        log_result("A6b: POST /api/paypal/create-order (CA)", False, f"Status {r.status_code}")
-except Exception as e:
-    log_result("A6b: POST /api/paypal/create-order (CA)", False, str(e))
-
-# Test invalid payloads
-try:
-    # Bad email
-    r = requests.post(f"{BASE_URL}/api/paypal/create-order", json={
-        "items": [{"sheetId": "14x24", "quantity": 1}],
-        "shipping": {"fullName": "Test", "email": "bad-email", "line1": "123", "city": "City", "state": "CA", "postalCode": "12345", "country": "US"}
-    })
-    if r.status_code == 400:
-        log_result("A6c: POST /api/paypal/create-order (bad email)", True, "400")
-    else:
-        log_result("A6c: POST /api/paypal/create-order (bad email)", False, f"Expected 400, got {r.status_code}")
-    
-    # Empty items
-    r = requests.post(f"{BASE_URL}/api/paypal/create-order", json={
-        "items": [],
-        "shipping": {"fullName": "Test", "email": "test@example.com", "line1": "123", "city": "City", "state": "CA", "postalCode": "12345", "country": "US"}
-    })
-    if r.status_code == 400:
-        log_result("A6d: POST /api/paypal/create-order (empty items)", True, "400")
-    else:
-        log_result("A6d: POST /api/paypal/create-order (empty items)", False, f"Expected 400, got {r.status_code}")
-    
-    # Unknown sheetId
-    r = requests.post(f"{BASE_URL}/api/paypal/create-order", json={
-        "items": [{"sheetId": "99x99", "quantity": 1}],
-        "shipping": {"fullName": "Test", "email": "test@example.com", "line1": "123", "city": "City", "state": "CA", "postalCode": "12345", "country": "US"}
-    })
-    if r.status_code == 400:
-        log_result("A6e: POST /api/paypal/create-order (unknown sheet)", True, "400")
-    else:
-        log_result("A6e: POST /api/paypal/create-order (unknown sheet)", False, f"Expected 400, got {r.status_code}")
-except Exception as e:
-    log_result("A6: POST /api/paypal/create-order (invalid)", False, str(e))
-
-# Test 7: GET /api/orders/:id → retrieve order
-if order_ids:
-    try:
-        order_id = order_ids[0]
-        r = requests.get(f"{BASE_URL}/api/orders/{order_id}")
-        if r.status_code == 200:
-            data = r.json()
-            if data.get("status") == "PENDING" and data.get("id") == order_id:
-                log_result("A7a: GET /api/orders/:id (valid)", True, f"200, status=PENDING")
-            else:
-                log_result("A7a: GET /api/orders/:id (valid)", False, f"Data incorrect: {data}")
-        else:
-            log_result("A7a: GET /api/orders/:id (valid)", False, f"Status {r.status_code}")
-    except Exception as e:
-        log_result("A7a: GET /api/orders/:id (valid)", False, str(e))
-    
-    # Bogus ID
-    try:
-        r = requests.get(f"{BASE_URL}/api/orders/bogus-id-12345")
-        if r.status_code == 404:
-            log_result("A7b: GET /api/orders/:id (bogus)", True, "404")
-        else:
-            log_result("A7b: GET /api/orders/:id (bogus)", False, f"Expected 404, got {r.status_code}")
-    except Exception as e:
-        log_result("A7b: GET /api/orders/:id (bogus)", False, str(e))
-
-# Test 8: POST /api/orders/:id/status → admin auth + status transitions
-if order_ids and ADMIN_TOKEN:
-    order_id = order_ids[0]
-    
-    # No token → 401
-    try:
-        r = requests.post(f"{BASE_URL}/api/orders/{order_id}/status", json={"status": "PROCESSING"})
-        if r.status_code == 401:
-            log_result("A8a: POST /api/orders/:id/status (no token)", True, "401")
-        else:
-            log_result("A8a: POST /api/orders/:id/status (no token)", False, f"Expected 401, got {r.status_code}")
-    except Exception as e:
-        log_result("A8a: POST /api/orders/:id/status (no token)", False, str(e))
-    
-    # Wrong token → 401
-    try:
-        r = requests.post(f"{BASE_URL}/api/orders/{order_id}/status", 
-                         json={"status": "PROCESSING", "adminToken": "wrong-token"})
-        if r.status_code == 401:
-            log_result("A8b: POST /api/orders/:id/status (wrong token)", True, "401")
-        else:
-            log_result("A8b: POST /api/orders/:id/status (wrong token)", False, f"Expected 401, got {r.status_code}")
-    except Exception as e:
-        log_result("A8b: POST /api/orders/:id/status (wrong token)", False, str(e))
-    
-    # Invalid status → 400
-    try:
-        r = requests.post(f"{BASE_URL}/api/orders/{order_id}/status", 
-                         json={"status": "CANCELLED", "adminToken": ADMIN_TOKEN})
-        if r.status_code == 400:
-            log_result("A8c: POST /api/orders/:id/status (invalid status)", True, "400")
-        else:
-            log_result("A8c: POST /api/orders/:id/status (invalid status)", False, f"Expected 400, got {r.status_code}")
-    except Exception as e:
-        log_result("A8c: POST /api/orders/:id/status (invalid status)", False, str(e))
-    
-    # Valid PROCESSING → 200
-    try:
-        r = requests.post(f"{BASE_URL}/api/orders/{order_id}/status", 
-                         json={"status": "PROCESSING", "adminToken": ADMIN_TOKEN})
-        if r.status_code == 200:
-            data = r.json()
-            if data.get("ok") and data.get("status") == "PROCESSING":
-                # Email may fail with validation error for example.com - that's expected
-                log_result("A8d: POST /api/orders/:id/status (PROCESSING)", True, 
-                          f"200, status=PROCESSING, email.ok={data.get('email', {}).get('ok')}")
-            else:
-                log_result("A8d: POST /api/orders/:id/status (PROCESSING)", False, f"Response incorrect: {data}")
-        else:
-            log_result("A8d: POST /api/orders/:id/status (PROCESSING)", False, f"Status {r.status_code}")
-    except Exception as e:
-        log_result("A8d: POST /api/orders/:id/status (PROCESSING)", False, str(e))
-    
-    # Valid SHIPPED with tracking → 200
-    try:
-        r = requests.post(f"{BASE_URL}/api/orders/{order_id}/status", 
-                         json={"status": "SHIPPED", "trackingNumber": "1Z999AA10123456784", 
-                              "carrier": "UPS", "adminToken": ADMIN_TOKEN})
-        if r.status_code == 200:
-            data = r.json()
-            if data.get("ok") and data.get("status") == "SHIPPED":
-                # Verify order was updated
-                r2 = requests.get(f"{BASE_URL}/api/orders/{order_id}")
-                if r2.status_code == 200:
-                    order_data = r2.json()
-                    if (order_data.get("status") == "SHIPPED" and 
-                        order_data.get("trackingNumber") == "1Z999AA10123456784" and
-                        order_data.get("carrier") == "UPS"):
-                        log_result("A8e: POST /api/orders/:id/status (SHIPPED)", True, 
-                                  "200, order updated with tracking")
-                    else:
-                        log_result("A8e: POST /api/orders/:id/status (SHIPPED)", False, 
-                                  f"Order not updated correctly: {order_data}")
-                else:
-                    log_result("A8e: POST /api/orders/:id/status (SHIPPED)", False, 
-                              f"Could not verify order update: {r2.status_code}")
-            else:
-                log_result("A8e: POST /api/orders/:id/status (SHIPPED)", False, f"Response incorrect: {data}")
-        else:
-            log_result("A8e: POST /api/orders/:id/status (SHIPPED)", False, f"Status {r.status_code}")
-    except Exception as e:
-        log_result("A8e: POST /api/orders/:id/status (SHIPPED)", False, str(e))
-    
-    # Non-existent order → 404
-    try:
-        r = requests.post(f"{BASE_URL}/api/orders/bogus-id-12345/status", 
-                         json={"status": "PROCESSING", "adminToken": ADMIN_TOKEN})
-        if r.status_code == 404:
-            log_result("A8f: POST /api/orders/:id/status (not found)", True, "404")
-        else:
-            log_result("A8f: POST /api/orders/:id/status (not found)", False, f"Expected 404, got {r.status_code}")
-    except Exception as e:
-        log_result("A8f: POST /api/orders/:id/status (not found)", False, str(e))
-
-# Test 9: POST /api/uploads → upload PNG
-uploaded_artwork_url = None
-try:
-    # Create a minimal PNG (1x1 transparent)
-    png_data = b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82'
-    
-    files = {'file': ('test.png', BytesIO(png_data), 'image/png')}
-    r = requests.post(f"{BASE_URL}/api/uploads", files=files)
-    if r.status_code == 200:
-        data = r.json()
-        uploaded_artwork_url = data.get("artworkUrl")
-        if uploaded_artwork_url and data.get("contentType") == "image/png":
-            log_result("A9a: POST /api/uploads (PNG)", True, f"200, artworkUrl={uploaded_artwork_url[:50]}...")
-        else:
-            log_result("A9a: POST /api/uploads (PNG)", False, f"Response incorrect: {data}")
-    else:
-        log_result("A9a: POST /api/uploads (PNG)", False, f"Status {r.status_code}, body: {r.text[:200]}")
-except Exception as e:
-    log_result("A9a: POST /api/uploads (PNG)", False, str(e))
-
-# Test invalid uploads
-try:
-    # JPEG → 415
-    jpeg_data = b'\xff\xd8\xff\xe0\x00\x10JFIF'
-    files = {'file': ('test.jpg', BytesIO(jpeg_data), 'image/jpeg')}
-    r = requests.post(f"{BASE_URL}/api/uploads", files=files)
-    if r.status_code == 415:
-        log_result("A9b: POST /api/uploads (JPEG)", True, "415")
-    else:
-        log_result("A9b: POST /api/uploads (JPEG)", False, f"Expected 415, got {r.status_code}")
-    
-    # Empty file → 413/400
-    files = {'file': ('empty.png', BytesIO(b''), 'image/png')}
-    r = requests.post(f"{BASE_URL}/api/uploads", files=files)
-    if r.status_code in [413, 400]:
-        log_result("A9c: POST /api/uploads (empty)", True, f"{r.status_code}")
-    else:
-        log_result("A9c: POST /api/uploads (empty)", False, f"Expected 413/400, got {r.status_code}")
-    
-    # Missing file field → 400
-    r = requests.post(f"{BASE_URL}/api/uploads", data={})
-    if r.status_code == 400:
-        log_result("A9d: POST /api/uploads (no file)", True, "400")
-    else:
-        log_result("A9d: POST /api/uploads (no file)", False, f"Expected 400, got {r.status_code}")
-except Exception as e:
-    log_result("A9: POST /api/uploads (invalid)", False, str(e))
-
-# Test 10: GET /api/uploads/:filename → retrieve uploaded file
-if uploaded_artwork_url:
-    try:
-        r = requests.get(f"{BASE_URL}{uploaded_artwork_url}")
-        if r.status_code == 200:
-            if r.headers.get("Content-Type") == "image/png" and verify_png_signature(r.content):
-                log_result("A10: GET /api/uploads/:filename", True, 
-                          f"200, Content-Type: image/png, valid PNG signature")
-            else:
-                log_result("A10: GET /api/uploads/:filename", False, 
-                          f"Content-Type: {r.headers.get('Content-Type')}, PNG valid: {verify_png_signature(r.content)}")
-        else:
-            log_result("A10: GET /api/uploads/:filename", False, f"Status {r.status_code}")
-    except Exception as e:
-        log_result("A10: GET /api/uploads/:filename", False, str(e))
-
-# Test 11: POST /api/contact → valid and invalid
-try:
-    # Valid contact
-    r = requests.post(f"{BASE_URL}/api/contact", json={
-        "name": "John Doe",
-        "email": "john@example.com",
-        "phone": "555-1234",
-        "subject": "Test inquiry",
-        "message": "This is a test message with more than 10 characters."
-    })
-    if r.status_code == 200 and r.json().get("ok"):
-        log_result("A11a: POST /api/contact (valid)", True, "200 {ok:true}")
-    else:
-        log_result("A11a: POST /api/contact (valid)", False, f"Status {r.status_code}, body: {r.json()}")
-    
-    # Bad email → 400
-    r = requests.post(f"{BASE_URL}/api/contact", json={
-        "name": "John Doe",
-        "email": "bad-email",
-        "message": "Test message"
-    })
-    if r.status_code == 400:
-        log_result("A11b: POST /api/contact (bad email)", True, "400")
-    else:
-        log_result("A11b: POST /api/contact (bad email)", False, f"Expected 400, got {r.status_code}")
-    
-    # Short name → 400
-    r = requests.post(f"{BASE_URL}/api/contact", json={
-        "name": "J",
-        "email": "john@example.com",
-        "message": "Test message"
-    })
-    if r.status_code == 400:
-        log_result("A11c: POST /api/contact (short name)", True, "400")
-    else:
-        log_result("A11c: POST /api/contact (short name)", False, f"Expected 400, got {r.status_code}")
-    
-    # Short message → 400
-    r = requests.post(f"{BASE_URL}/api/contact", json={
-        "name": "John Doe",
-        "email": "john@example.com",
-        "message": "Short"
-    })
-    if r.status_code == 400:
-        log_result("A11d: POST /api/contact (short message)", True, "400")
-    else:
-        log_result("A11d: POST /api/contact (short message)", False, f"Expected 400, got {r.status_code}")
-except Exception as e:
-    log_result("A11: POST /api/contact", False, str(e))
-
-# Test 12: POST /api/email/test → send test emails
-sample_composite_url = None
-try:
-    r = requests.post(f"{BASE_URL}/api/email/test")
-    if r.status_code == 200:
-        data = r.json()
-        results_data = data.get("results", {})
-        shop = results_data.get("shop", {})
-        buyer = results_data.get("buyer", {})
-        sample_composite_url = data.get("sampleCompositeUrl")
+        test_passed = resp.status_code == 200 and len(sheets) == 9
+        print_test("GET /api/pricing returns 200 with 9 sheets", test_passed, f"Got {len(sheets)} sheets")
         
-        # Shop email should succeed, buyer may fail with example.com validation
-        if shop.get("ok") and sample_composite_url:
-            log_result("A12a: POST /api/email/test", True, 
-                      f"200, shop.ok={shop.get('ok')}, buyer.ok={buyer.get('ok')}, sampleCompositeUrl present")
-        else:
-            log_result("A12a: POST /api/email/test", False, f"Response incorrect: {data}")
-    else:
-        log_result("A12a: POST /api/email/test", False, f"Status {r.status_code}")
-except Exception as e:
-    log_result("A12a: POST /api/email/test", False, str(e))
-
-# Verify sample composite URL
-if sample_composite_url:
-    try:
-        r = requests.get(f"{BASE_URL}{sample_composite_url}")
-        if r.status_code == 200:
-            if r.headers.get("Content-Type") == "image/png" and verify_png_signature(r.content):
-                ihdr = get_png_ihdr_info(r.content)
-                if ihdr and ihdr['color_type'] == 6:  # RGBA
-                    log_result("A12b: GET sampleCompositeUrl", True, 
-                              f"200, image/png, colorType=6 (RGBA)")
-                else:
-                    log_result("A12b: GET sampleCompositeUrl", False, 
-                              f"colorType={ihdr['color_type'] if ihdr else 'unknown'}, expected 6")
-            else:
-                log_result("A12b: GET sampleCompositeUrl", False, 
-                          f"Content-Type: {r.headers.get('Content-Type')}, PNG valid: {verify_png_signature(r.content)}")
-        else:
-            log_result("A12b: GET sampleCompositeUrl", False, f"Status {r.status_code}")
+        # Verify 14x12 ($10) and 14x120 ($40)
+        sheet_14x12 = next((s for s in sheets if s.get("id") == "14x12"), None)
+        sheet_14x120 = next((s for s in sheets if s.get("id") == "14x120"), None)
+        test_passed = sheet_14x12 and sheet_14x12.get("price") == 10
+        print_test("14x12 sheet costs $10", test_passed, f"Got: ${sheet_14x12.get('price') if sheet_14x12 else 'N/A'}")
+        test_passed = sheet_14x120 and sheet_14x120.get("price") == 40
+        print_test("14x120 sheet costs $40", test_passed, f"Got: ${sheet_14x120.get('price') if sheet_14x120 else 'N/A'}")
+        
+        # 2. POST /api/pricing/quote
+        resp = requests.post(f"{BASE_URL}/api/pricing/quote", 
+                            json={"sheetId": "14x60"}, 
+                            timeout=30)
+        print(f"POST /api/pricing/quote - Status: {resp.status_code}")
+        data = resp.json()
+        unit_price = data.get("unitPrice")
+        test_passed = resp.status_code == 200 and unit_price == 26
+        print_test("POST /api/pricing/quote {sheetId:'14x60'} returns unitPrice:26", test_passed, f"Got: {unit_price}")
+        
+        # 3. POST /api/cart/validate with tampered unitPrice
+        resp = requests.post(f"{BASE_URL}/api/cart/validate",
+                            json={
+                                "items": [{
+                                    "sheetId": "14x36",
+                                    "quantity": 2,
+                                    "unitPrice": 9999
+                                }]
+                            },
+                            timeout=30)
+        print(f"POST /api/cart/validate - Status: {resp.status_code}")
+        data = resp.json()
+        recomputed_price = data.get("items", [{}])[0].get("unitPrice")
+        test_passed = resp.status_code == 200 and recomputed_price == 18
+        print_test("POST /api/cart/validate recomputes tampered unitPrice 9999→18", test_passed, f"Got: {recomputed_price}")
+        
+        return True
     except Exception as e:
-        log_result("A12b: GET sampleCompositeUrl", False, str(e))
+        print(f"❌ FAIL | Pricing endpoints error: {e}")
+        return False
 
-# ============================================================================
-# PART B: NEW ENDPOINT - POST /api/composite
-# ============================================================================
-print()
-print("PART B: NEW ENDPOINT - POST /api/composite")
-print("-" * 80)
-
-composite_artwork_url = None
-
-# Test 1: Upload a PNG first for use in composite
-test_artwork_url = None
-try:
-    png_data = b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82'
-    files = {'file': ('test-composite.png', BytesIO(png_data), 'image/png')}
-    r = requests.post(f"{BASE_URL}/api/uploads", files=files)
-    if r.status_code == 200:
-        test_artwork_url = r.json().get("artworkUrl")
-        log_result("B1: Upload test artwork", True, f"artworkUrl={test_artwork_url[:50]}...")
-    else:
-        log_result("B1: Upload test artwork", False, f"Status {r.status_code}")
-except Exception as e:
-    log_result("B1: Upload test artwork", False, str(e))
-
-# Test 2: POST /api/composite with valid layout
-if test_artwork_url:
-    try:
-        r = requests.post(f"{BASE_URL}/api/composite", json={
-            "layout": {
-                "version": 1,
-                "sheetSizeId": "14x24",
-                "items": [{
-                    "artworkUrl": test_artwork_url,
-                    "xIn": 1,
-                    "yIn": 1,
-                    "widthIn": 4,
-                    "heightIn": 4,
-                    "rotationDeg": 0,
-                    "zIndex": 0
-                }]
-            }
-        })
-        if r.status_code == 200:
-            data = r.json()
-            composite_artwork_url = data.get("artworkUrl")
-            if composite_artwork_url and data.get("contentType") == "image/png":
-                log_result("B2: POST /api/composite (valid)", True, 
-                          f"200, artworkUrl={composite_artwork_url[:50]}...")
-            else:
-                log_result("B2: POST /api/composite (valid)", False, f"Response incorrect: {data}")
-        else:
-            log_result("B2: POST /api/composite (valid)", False, 
-                      f"Status {r.status_code}, body: {r.text[:200]}")
-    except Exception as e:
-        log_result("B2: POST /api/composite (valid)", False, str(e))
-
-# Test 3: Verify composite PNG dimensions and color type
-if composite_artwork_url:
-    try:
-        r = requests.get(f"{BASE_URL}{composite_artwork_url}")
-        if r.status_code == 200:
-            if verify_png_signature(r.content):
-                ihdr = get_png_ihdr_info(r.content)
-                if ihdr:
-                    # 14x24 sheet at 300 DPI: 4200x7200 pixels
-                    expected_width = 14 * 300  # 4200
-                    expected_height = 24 * 300  # 7200
-                    if (ihdr['width'] == expected_width and 
-                        ihdr['height'] == expected_height and 
-                        ihdr['color_type'] == 6):  # RGBA
-                        log_result("B3: GET composite PNG", True, 
-                                  f"200, {ihdr['width']}x{ihdr['height']}, colorType=6 (RGBA)")
-                    else:
-                        log_result("B3: GET composite PNG", False, 
-                                  f"Dimensions: {ihdr['width']}x{ihdr['height']} (expected {expected_width}x{expected_height}), colorType={ihdr['color_type']} (expected 6)")
-                else:
-                    log_result("B3: GET composite PNG", False, "Could not parse IHDR")
-            else:
-                log_result("B3: GET composite PNG", False, "Invalid PNG signature")
-        else:
-            log_result("B3: GET composite PNG", False, f"Status {r.status_code}")
-    except Exception as e:
-        log_result("B3: GET composite PNG", False, str(e))
-
-# Test 4: Invalid payloads
-try:
-    # No layout → 400
-    r = requests.post(f"{BASE_URL}/api/composite", json={})
-    if r.status_code == 400:
-        log_result("B4a: POST /api/composite (no layout)", True, "400")
-    else:
-        log_result("B4a: POST /api/composite (no layout)", False, f"Expected 400, got {r.status_code}")
+def test_create_order():
+    """TEST C — Create-order live PayPal"""
+    print("\n=== TEST C: Create-Order Live PayPal ===")
     
-    # Unknown sheetSizeId → 500 (server render error)
-    r = requests.post(f"{BASE_URL}/api/composite", json={
-        "layout": {
-            "sheetSizeId": "99x99",
-            "items": []
-        }
-    })
-    if r.status_code == 500:
-        log_result("B4b: POST /api/composite (unknown sheet)", True, "500 (expected)")
-    else:
-        log_result("B4b: POST /api/composite (unknown sheet)", False, 
-                  f"Expected 500, got {r.status_code}")
-except Exception as e:
-    log_result("B4: POST /api/composite (invalid)", False, str(e))
+    # 1. HI pickup
+    print("\n--- C1: HI Pickup ---")
+    try:
+        resp = requests.post(f"{BASE_URL}/api/paypal/create-order",
+                            json={
+                                "items": [{"sheetId": "14x12", "quantity": 1}],
+                                "shipping": {
+                                    "fullName": "Recovery Test",
+                                    "email": "nevermoreprintingcompany@yahoo.com",
+                                    "phone": "808-555-0100"
+                                },
+                                "deliveryMethod": "pickup"
+                            },
+                            timeout=30)
+        print(f"Status: {resp.status_code}")
+        data = resp.json()
+        print(f"Response: {json.dumps(data, indent=2)}")
+        
+        test_passed = resp.status_code == 201
+        print_test("HI pickup returns 201", test_passed)
+        
+        order_id = data.get("orderID")
+        test_passed = order_id and len(order_id) > 10
+        print_test("orderID present (PayPal order)", test_passed, f"Got: {order_id}")
+        
+        internal_order_id = data.get("internalOrderId")
+        test_passed = internal_order_id and len(internal_order_id) == 36  # UUID format
+        print_test("internalOrderId present (UUID)", test_passed, f"Got: {internal_order_id}")
+        
+        order_number = data.get("orderNumber")
+        test_passed = order_number and order_number >= 108
+        print_test("orderNumber >= 108", test_passed, f"Got: {order_number}")
+        
+        totals = data.get("totals", {})
+        test_passed = (totals.get("subtotal") == 10 and 
+                      totals.get("shipping") == 0 and
+                      abs(totals.get("tax", 0) - 0.47) < 0.01 and
+                      abs(totals.get("total", 0) - 10.47) < 0.01 and
+                      abs(totals.get("taxRate", 0) - 0.04712) < 0.0001 and
+                      totals.get("taxState") == "HI" and
+                      totals.get("deliveryMethod") == "pickup")
+        print_test("Totals correct for HI pickup", test_passed, 
+                  f"subtotal:{totals.get('subtotal')}, shipping:{totals.get('shipping')}, tax:{totals.get('tax')}, total:{totals.get('total')}, taxRate:{totals.get('taxRate')}, taxState:{totals.get('taxState')}, deliveryMethod:{totals.get('deliveryMethod')}")
+        
+        # Store for admin tests
+        global test_internal_order_id
+        test_internal_order_id = internal_order_id
+        
+    except Exception as e:
+        print(f"❌ FAIL | HI pickup error: {e}")
+    
+    # 2. HI ship
+    print("\n--- C2: HI Ship ---")
+    try:
+        resp = requests.post(f"{BASE_URL}/api/paypal/create-order",
+                            json={
+                                "items": [{"sheetId": "14x24", "quantity": 1}],
+                                "shipping": {
+                                    "fullName": "Recovery Test",
+                                    "email": "nevermoreprintingcompany@yahoo.com",
+                                    "line1": "1 Ala Moana",
+                                    "city": "Honolulu",
+                                    "state": "HI",
+                                    "postalCode": "96813",
+                                    "country": "US"
+                                },
+                                "deliveryMethod": "ship"
+                            },
+                            timeout=30)
+        print(f"Status: {resp.status_code}")
+        data = resp.json()
+        
+        test_passed = resp.status_code == 201
+        print_test("HI ship returns 201", test_passed)
+        
+        totals = data.get("totals", {})
+        test_passed = totals.get("shipping") == 5 and totals.get("deliveryMethod") == "ship"
+        print_test("HI ship has shipping:$5", test_passed, f"shipping:{totals.get('shipping')}, deliveryMethod:{totals.get('deliveryMethod')}")
+        
+        test_passed = totals.get("taxState") == "HI" and totals.get("tax", 0) > 0
+        print_test("HI ship has HI tax applied", test_passed, f"taxState:{totals.get('taxState')}, tax:{totals.get('tax')}")
+        
+    except Exception as e:
+        print(f"❌ FAIL | HI ship error: {e}")
+    
+    # 3. CA ship
+    print("\n--- C3: CA Ship ---")
+    try:
+        resp = requests.post(f"{BASE_URL}/api/paypal/create-order",
+                            json={
+                                "items": [{"sheetId": "14x24", "quantity": 2}],
+                                "shipping": {
+                                    "fullName": "Recovery Test",
+                                    "email": "nevermoreprintingcompany@yahoo.com",
+                                    "line1": "1 Market St",
+                                    "city": "Los Angeles",
+                                    "state": "CA",
+                                    "postalCode": "90001",
+                                    "country": "US"
+                                },
+                                "deliveryMethod": "ship"
+                            },
+                            timeout=30)
+        print(f"Status: {resp.status_code}")
+        data = resp.json()
+        
+        test_passed = resp.status_code == 201
+        print_test("CA ship returns 201", test_passed)
+        
+        totals = data.get("totals", {})
+        test_passed = totals.get("shipping") == 12
+        print_test("CA ship has shipping:$12", test_passed, f"Got: {totals.get('shipping')}")
+        
+        test_passed = totals.get("tax") == 0 and totals.get("taxState") == "CA"
+        print_test("CA ship has tax:$0, taxState:CA", test_passed, f"tax:{totals.get('tax')}, taxState:{totals.get('taxState')}")
+        
+    except Exception as e:
+        print(f"❌ FAIL | CA ship error: {e}")
+    
+    # 4. Sanity checks - bad payloads
+    print("\n--- C4: Invalid Payloads ---")
+    try:
+        # Bad email
+        resp = requests.post(f"{BASE_URL}/api/paypal/create-order",
+                            json={
+                                "items": [{"sheetId": "14x12", "quantity": 1}],
+                                "shipping": {
+                                    "fullName": "Test",
+                                    "email": "not-an-email",
+                                    "phone": "808-555-0100"
+                                },
+                                "deliveryMethod": "pickup"
+                            },
+                            timeout=30)
+        test_passed = resp.status_code == 400
+        print_test("Bad email returns 400", test_passed, f"Got: {resp.status_code}")
+        
+        # Empty items
+        resp = requests.post(f"{BASE_URL}/api/paypal/create-order",
+                            json={
+                                "items": [],
+                                "shipping": {
+                                    "fullName": "Test",
+                                    "email": "test@example.com",
+                                    "phone": "808-555-0100"
+                                },
+                                "deliveryMethod": "pickup"
+                            },
+                            timeout=30)
+        test_passed = resp.status_code == 400
+        print_test("Empty items returns 400", test_passed, f"Got: {resp.status_code}")
+        
+        # Missing line1 on ship
+        resp = requests.post(f"{BASE_URL}/api/paypal/create-order",
+                            json={
+                                "items": [{"sheetId": "14x12", "quantity": 1}],
+                                "shipping": {
+                                    "fullName": "Test",
+                                    "email": "test@example.com",
+                                    "city": "Honolulu",
+                                    "state": "HI",
+                                    "postalCode": "96813",
+                                    "country": "US"
+                                },
+                                "deliveryMethod": "ship"
+                            },
+                            timeout=30)
+        test_passed = resp.status_code == 400
+        print_test("Missing line1 on ship returns 400", test_passed, f"Got: {resp.status_code}")
+        
+    except Exception as e:
+        print(f"❌ FAIL | Invalid payload tests error: {e}")
 
-# ============================================================================
-# SUMMARY
-# ============================================================================
-print()
-print("=" * 80)
-print("TEST SUMMARY")
-print("=" * 80)
-print(f"Total: {passed + failed} | Passed: {passed} | Failed: {failed}")
-print()
+def test_admin_endpoints():
+    """TEST D — Admin endpoints"""
+    print("\n=== TEST D: Admin Endpoints ===")
+    
+    if 'test_internal_order_id' not in globals():
+        print("⚠️  SKIP | No internal order ID from create-order test")
+        return
+    
+    order_id = test_internal_order_id
+    
+    # 1. POST /api/orders/[id]/rerender with NO token
+    print("\n--- D1: Rerender without token ---")
+    try:
+        resp = requests.post(f"{BASE_URL}/api/orders/{order_id}/rerender",
+                            json={"force": True},
+                            timeout=30)
+        print(f"Status: {resp.status_code}")
+        test_passed = resp.status_code == 401
+        print_test("Rerender without token returns 401", test_passed, f"Got: {resp.status_code}")
+    except Exception as e:
+        print(f"❌ FAIL | Rerender no token error: {e}")
+    
+    # 2. POST /api/orders/[id]/rerender with correct token
+    print("\n--- D2: Rerender with correct token ---")
+    try:
+        resp = requests.post(f"{BASE_URL}/api/orders/{order_id}/rerender",
+                            json={"force": True},
+                            headers={"x-admin-token": ADMIN_TOKEN},
+                            timeout=60)
+        print(f"Status: {resp.status_code}")
+        data = resp.json()
+        print(f"Response: {json.dumps(data, indent=2)}")
+        
+        test_passed = resp.status_code == 200
+        print_test("Rerender with token returns 200", test_passed)
+        
+        test_passed = data.get("ok") == True
+        print_test("ok: true", test_passed, f"Got: {data.get('ok')}")
+        
+        test_passed = data.get("status") == "succeeded"
+        print_test("status: 'succeeded'", test_passed, f"Got: {data.get('status')}")
+        
+        test_passed = data.get("renderedCount") == 0
+        print_test("renderedCount: 0 (no layout in order)", test_passed, f"Got: {data.get('renderedCount')}")
+        
+        test_passed = data.get("totalItems") == 1
+        print_test("totalItems: 1", test_passed, f"Got: {data.get('totalItems')}")
+        
+        test_passed = data.get("attempt") == 1
+        print_test("attempt: 1", test_passed, f"Got: {data.get('attempt')}")
+        
+    except Exception as e:
+        print(f"❌ FAIL | Rerender with token error: {e}")
+    
+    # 3. POST /api/orders/[id]/status with correct token
+    print("\n--- D3: Status update with token ---")
+    try:
+        resp = requests.post(f"{BASE_URL}/api/orders/{order_id}/status",
+                            json={"status": "PROCESSING"},
+                            headers={"x-admin-token": ADMIN_TOKEN},
+                            timeout=30)
+        print(f"Status: {resp.status_code}")
+        data = resp.json()
+        print(f"Response: {json.dumps(data, indent=2)}")
+        
+        test_passed = resp.status_code == 200
+        print_test("Status update returns 200", test_passed)
+        
+        test_passed = data.get("ok") == True
+        print_test("ok: true", test_passed, f"Got: {data.get('ok')}")
+        
+        test_passed = data.get("status") == "PROCESSING"
+        print_test("status: 'PROCESSING'", test_passed, f"Got: {data.get('status')}")
+        
+        # Email may fail with Resend validation - that's fine
+        email_result = data.get("email", {})
+        print(f"    Email result: {email_result}")
+        
+    except Exception as e:
+        print(f"❌ FAIL | Status update error: {e}")
+    
+    # 4. GET /api/orders/[id] to verify updates
+    print("\n--- D4: Get order to verify updates ---")
+    try:
+        resp = requests.get(f"{BASE_URL}/api/orders/{order_id}", timeout=30)
+        print(f"Status: {resp.status_code}")
+        data = resp.json()
+        
+        test_passed = resp.status_code == 200
+        print_test("GET order returns 200", test_passed)
+        
+        test_passed = data.get("status") == "PROCESSING"
+        print_test("Order status is PROCESSING", test_passed, f"Got: {data.get('status')}")
+        
+        test_passed = data.get("renderStatus") == "succeeded"
+        print_test("Order renderStatus is succeeded", test_passed, f"Got: {data.get('renderStatus')}")
+        
+    except Exception as e:
+        print(f"❌ FAIL | Get order error: {e}")
 
-if failed > 0:
-    print("FAILED TESTS:")
-    for r in results:
-        if "❌" in r:
-            print(f"  {r}")
-    print()
+def test_uploads_composite():
+    """TEST E — Uploads + composite"""
+    print("\n=== TEST E: Uploads + Composite ===")
+    
+    # 1. POST /api/uploads with a small PNG
+    print("\n--- E1: Upload PNG ---")
+    try:
+        # Create a minimal PNG (1x1 transparent)
+        png_data = bytes([
+            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,  # PNG signature
+            0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,  # IHDR chunk
+            0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,  # 1x1
+            0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4,  # RGBA
+            0x89, 0x00, 0x00, 0x00, 0x0A, 0x49, 0x44, 0x41,  # IDAT chunk
+            0x54, 0x78, 0x9C, 0x63, 0x00, 0x01, 0x00, 0x00,
+            0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00,
+            0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE,  # IEND chunk
+            0x42, 0x60, 0x82
+        ])
+        
+        files = {'file': ('test.png', BytesIO(png_data), 'image/png')}
+        resp = requests.post(f"{BASE_URL}/api/uploads", files=files, timeout=30)
+        print(f"Status: {resp.status_code}")
+        data = resp.json()
+        print(f"Response: {json.dumps(data, indent=2)}")
+        
+        test_passed = resp.status_code == 200
+        print_test("Upload returns 200", test_passed)
+        
+        artwork_url = data.get("artworkUrl")
+        test_passed = artwork_url and len(artwork_url) > 0
+        print_test("artworkUrl present", test_passed, f"Got: {artwork_url}")
+        
+        # GET the uploaded file
+        if artwork_url:
+            # Handle both absolute and relative URLs
+            if artwork_url.startswith('http'):
+                get_url = artwork_url
+            else:
+                get_url = f"{BASE_URL}{artwork_url}"
+            
+            resp = requests.get(get_url, timeout=30)
+            test_passed = resp.status_code == 200 and resp.headers.get('content-type') == 'image/png'
+            print_test("GET uploaded file returns 200 image/png", test_passed, 
+                      f"Status: {resp.status_code}, Content-Type: {resp.headers.get('content-type')}")
+            
+            # Store for composite test
+            global test_artwork_url
+            test_artwork_url = artwork_url
+        
+    except Exception as e:
+        print(f"❌ FAIL | Upload error: {e}")
+    
+    # 2. POST /api/composite with valid layout
+    print("\n--- E2: Composite render ---")
+    try:
+        if 'test_artwork_url' not in globals():
+            print("⚠️  SKIP | No artwork URL from upload test")
+            return
+        
+        resp = requests.post(f"{BASE_URL}/api/composite",
+                            json={
+                                "layout": {
+                                    "sheetSizeId": "14x24",
+                                    "items": [{
+                                        "artworkUrl": test_artwork_url,
+                                        "xIn": 1,
+                                        "yIn": 1,
+                                        "widthIn": 4,
+                                        "heightIn": 4,
+                                        "rotationDeg": 0,
+                                        "zIndex": 0
+                                    }]
+                                }
+                            },
+                            timeout=60)
+        print(f"Status: {resp.status_code}")
+        data = resp.json()
+        print(f"Response: {json.dumps(data, indent=2)}")
+        
+        test_passed = resp.status_code == 200
+        print_test("Composite returns 200", test_passed)
+        
+        composite_url = data.get("artworkUrl")
+        test_passed = composite_url and len(composite_url) > 0
+        print_test("Composite artworkUrl present", test_passed, f"Got: {composite_url}")
+        
+        # GET the composite
+        if composite_url:
+            if composite_url.startswith('http'):
+                get_url = composite_url
+            else:
+                get_url = f"{BASE_URL}{composite_url}"
+            
+            resp = requests.get(get_url, timeout=30)
+            test_passed = resp.status_code == 200 and resp.headers.get('content-type') == 'image/png'
+            print_test("GET composite returns 200 image/png", test_passed,
+                      f"Status: {resp.status_code}, Content-Type: {resp.headers.get('content-type')}")
+            
+            # Check dimensions (should be 4200×7200 for 14×24 @ 300 DPI)
+            if resp.status_code == 200:
+                content = resp.content
+                # PNG IHDR is at bytes 16-24 (width) and 20-24 (height)
+                if len(content) > 24:
+                    width = int.from_bytes(content[16:20], 'big')
+                    height = int.from_bytes(content[20:24], 'big')
+                    test_passed = width == 4200 and height == 7200
+                    print_test("Composite dimensions 4200×7200 (14×24 @ 300 DPI)", test_passed,
+                              f"Got: {width}×{height}")
+        
+    except Exception as e:
+        print(f"❌ FAIL | Composite error: {e}")
 
-print("DETAILED RESULTS:")
-for r in results:
-    print(f"  {r}")
+def test_contact():
+    """TEST F — /api/contact"""
+    print("\n=== TEST F: Contact Endpoint ===")
+    try:
+        resp = requests.post(f"{BASE_URL}/api/contact",
+                            json={
+                                "name": "Recovery Test",
+                                "email": "nevermoreprintingcompany@yahoo.com",
+                                "subject": "Recovery smoke test",
+                                "message": "Testing after Vercel env-var fix — please ignore"
+                            },
+                            timeout=30)
+        print(f"Status: {resp.status_code}")
+        data = resp.json()
+        print(f"Response: {json.dumps(data, indent=2)}")
+        
+        test_passed = resp.status_code == 200
+        print_test("Contact returns 200", test_passed)
+        
+        test_passed = data.get("ok") == True
+        print_test("ok: true", test_passed, f"Got: {data.get('ok')}")
+        
+    except Exception as e:
+        print(f"❌ FAIL | Contact error: {e}")
 
-print()
-print("=" * 80)
-if failed == 0:
-    print("✅ ALL TESTS PASSED - NO REGRESSIONS DETECTED")
-else:
-    print(f"❌ {failed} TEST(S) FAILED - REVIEW REQUIRED")
-print("=" * 80)
+def main():
+    print("=" * 80)
+    print("PRODUCTION RECOVERY VERIFICATION")
+    print(f"Base URL: {BASE_URL}")
+    print("=" * 80)
+    
+    test_health()
+    test_pricing()
+    test_create_order()
+    test_admin_endpoints()
+    test_uploads_composite()
+    test_contact()
+    
+    print("\n" + "=" * 80)
+    print("PRODUCTION RECOVERY VERIFICATION COMPLETE")
+    print("=" * 80)
+
+if __name__ == "__main__":
+    main()

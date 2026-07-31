@@ -177,6 +177,10 @@ export default function CheckoutPage() {
                   >
                     <div className="flex items-center gap-2 text-sm font-bold">Rush production <span className="rounded bg-amber-500/20 px-1.5 py-0.5 text-[10px] font-bold text-amber-300">+$30</span></div>
                     <div className="mt-1 text-xs text-neutral-400">Bumped to the front of the queue · ready in 1 business day</div>
+                    <div className="mt-2 flex items-start gap-1.5 rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-1.5 text-[11px] leading-tight text-amber-200">
+                      <span aria-hidden>⏰</span>
+                      <span><strong>Order by 12:00 pm HST</strong> for next-day production. Orders placed after 12 pm HST or on weekends start the next business day.</span>
+                    </div>
                   </button>
                 </div>
               </section>

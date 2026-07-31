@@ -1322,3 +1322,80 @@ agent_communication:
         **NO BUGS FOUND** - Full end-to-end LIVE order pipeline verified against real customer order with real PayPal payment.
         
         Task "Production checkout recovery" remains working:true, needs_retesting:false.
+        - working: true
+          agent: "testing"
+          comment: |
+            ✅ RUSH PRODUCTION UPCHARGE FEATURE VERIFIED ON PRODUCTION - ALL 9 TESTS PASSED
+            
+            Comprehensive verification of rush production upcharge feature on LIVE production (https://www.nevermoredtf.com).
+            
+            **FEATURE 1: Rush Production Upcharge ($30 flat) - ALL 5 TEST CASES PASSED**
+            
+            | Test Case | Expected | Actual | Status |
+            |-----------|----------|--------|--------|
+            | **A: Rush + HI ship** | subtotal=10, shipping=5, rushFee=30, tax=2.12, total=47.12, rush=true, taxState=HI | subtotal=10, shipping=5, rushFee=30, tax=2.12, total=47.12, rush=true, taxState=HI | ✅ PASS |
+            | **B: Rush + pickup** | subtotal=10, shipping=0, rushFee=30, tax=1.88, total=41.88, rush=true | subtotal=10, shipping=0, rushFee=30, tax=1.88, total=41.88, rush=true | ✅ PASS |
+            | **C: Non-rush pickup** | subtotal=10, shipping=0, rushFee=0, tax=0.47, total=10.47, rush=false | subtotal=10, shipping=0, rushFee=0, tax=0.47, total=10.47, rush=false | ✅ PASS |
+            | **D: CA ship + rush** | subtotal=28, shipping=12, rushFee=30, tax=0, total=70.00, rush=true, taxState=CA | subtotal=28, shipping=12, rushFee=30, tax=0, total=70.00, rush=true, taxState=CA | ✅ PASS |
+            | **E: Backwards compat (no rush field)** | rushFee=0, rush=false, tax=0.71 (no rush in calc), total=15.71 | rushFee=0, rush=false, tax=0.71, total=15.71 | ✅ PASS |
+            
+            **Persisted Order Verification (5/5 PASSED):**
+            - Test A order (785ab15d-a79f-4e34-b2d6-d8f4af75c0f3): rush=true, rushFee=30, total=47.12 ✓
+            - Test B order (0d023156-4e3d-4aea-b5d1-ce3887e720c3): rush=true, rushFee=30, total=41.88 ✓
+            - Test C order (dd85ac60-1f8a-492c-905a-cfa133cc1180): rush=false, rushFee=0, total=10.47 ✓
+            - Test D order (3d82ead3-7220-46ec-adf8-e51f4205352c): rush=true, rushFee=30, total=70.00 ✓
+            - Test E order (52f94cf1-10c6-4857-a6d7-cb94e544d8e9): rush=false, rushFee=0, total=15.71 ✓
+            
+            **FEATURE 2: POST /api/cart/validate accepts rush - PASSED**
+            - Request: {items:[{sheetId:"14x12",quantity:1,unitPrice:9999}], shipping:{state:"HI",country:"US"}, deliveryMethod:"pickup", rush:true}
+            - Response: HTTP 200, total=41.88 (subtotal=10, rushFee=30, tax=1.88) ✓
+            - Proves cart/validate correctly recomputes prices and includes rush fee ✓
+            
+            **FEATURE 3: Regression Tests - ALL 3 PASSED**
+            - GET /api/health → 200 ✓
+              * mongo.ok=true ✓
+              * paypal.ok=true, base="https://api-m.paypal.com" (LIVE) ✓
+              * PAYPAL_ENV='live' ✓
+            - POST /api/cart/validate with tampered unitPrice:9999 → 200 ✓
+              * unitPrice recomputed to 18 (14x36 sheet) ✓
+            - POST /api/orders/[id]/status with admin token + {status:"PROCESSING"} → 200 ✓
+              * ok=true ✓
+              * email.ok=true (Resend email sent successfully) ✓
+            
+            **CRITICAL FINDINGS:**
+            ✅ Rush fee ($30 flat) correctly applied when rush=true
+            ✅ Rush fee correctly excluded when rush=false or omitted
+            ✅ Tax calculation includes rush fee in taxable base (HI: (subtotal+shipping+rushFee)*0.04712)
+            ✅ Backwards compatibility maintained (no rush field defaults to rush=false, rushFee=0)
+            ✅ Persisted orders contain correct rush, rushFee, and total fields
+            ✅ cart/validate endpoint correctly handles rush parameter
+            ✅ All regression tests passed (health, cart validation, admin endpoints)
+            
+            **NO BUGS FOUND** - Rush production upcharge feature fully operational on production.
+
+agent_communication:
+    - agent: "testing"
+      message: |
+        ✅ RUSH PRODUCTION UPCHARGE FEATURE VERIFICATION COMPLETE - ALL 9 TESTS PASSED
+        
+        Verified two new features on PRODUCTION (https://www.nevermoredtf.com):
+        
+        **Feature 1: Rush production upcharge ($30 flat) - WORKING PERFECTLY**
+        - All 5 test cases passed (Rush+HI ship, Rush+pickup, Non-rush pickup, CA ship+rush, Backwards compat)
+        - Tax calculation correctly includes rush fee in taxable base for HI orders
+        - Persisted orders contain correct rush, rushFee, and total fields
+        - Backwards compatibility maintained (no rush field defaults to rush=false)
+        
+        **Feature 2: POST /api/cart/validate accepts rush - WORKING PERFECTLY**
+        - Correctly recomputes prices and includes rush fee
+        - Returns expected total=41.88 for HI pickup with rush
+        
+        **Feature 3: Regression tests - ALL PASSED**
+        - /api/health: mongo.ok=true, paypal.ok=true (LIVE), PAYPAL_ENV='live'
+        - cart/validate: tampered prices correctly recomputed
+        - admin status: email.ok=true (Resend working)
+        
+        **NO BUGS FOUND** - All features working correctly on production.
+        
+        NOTE: Mobile UI change (layer delete X visible on mobile) is CSS-only and doesn't require backend testing per review request.
+

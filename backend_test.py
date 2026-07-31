@@ -1,294 +1,616 @@
 #!/usr/bin/env python3
 """
-Backend test script for Nevermore DTF production verification
-Tests LIVE ORDER #120 (4fd170b3-3005-49e7-8071-3086ccd439c8)
+Backend test for rush production upcharge feature on PRODUCTION
+Tests against https://www.nevermoredtf.com
 """
 
 import requests
-import struct
-import sys
+import json
+from typing import Dict, Any
 
-# Production configuration
 BASE_URL = "https://www.nevermoredtf.com"
 ADMIN_TOKEN = "nevermore-admin-2026-XvT9pWq3Rz1KcJ7bH2Fs4Ye8Da5Nh6Uk"
-ORDER_ID = "4fd170b3-3005-49e7-8071-3086ccd439c8"
 
-# Test results tracking
-tests_passed = 0
-tests_failed = 0
-
-def log_test(test_name, passed, details=""):
-    global tests_passed, tests_failed
+def test_create_order_rush_hi_ship():
+    """Test Case A: Rush + HI ship"""
+    print("\n=== TEST CASE A: Rush + HI ship ===")
+    
+    payload = {
+        "items": [{"sheetId": "14x12", "quantity": 1}],
+        "shipping": {
+            "fullName": "Test Buyer",
+            "email": "nevermoreprintingcompany@yahoo.com",
+            "line1": "1 Ala Moana",
+            "city": "Honolulu",
+            "state": "HI",
+            "postalCode": "96813",
+            "country": "US"
+        },
+        "deliveryMethod": "ship",
+        "rush": True
+    }
+    
+    response = requests.post(f"{BASE_URL}/api/paypal/create-order", json=payload)
+    print(f"Status: {response.status_code}")
+    
+    if response.status_code != 201:
+        print(f"❌ FAILED: Expected 201, got {response.status_code}")
+        print(f"Response: {response.text}")
+        return None
+    
+    data = response.json()
+    totals = data.get("totals", {})
+    
+    print(f"Totals: {json.dumps(totals, indent=2)}")
+    
+    # Expected: subtotal=10, shipping=5, rushFee=30, tax=2.12, total=47.12, rush=true, taxState="HI"
+    expected = {
+        "subtotal": 10,
+        "shipping": 5,
+        "rushFee": 30,
+        "tax": 2.12,
+        "total": 47.12,
+        "rush": True,
+        "taxState": "HI"
+    }
+    
+    passed = True
+    for key, expected_val in expected.items():
+        actual_val = totals.get(key)
+        if actual_val != expected_val:
+            print(f"❌ {key}: expected {expected_val}, got {actual_val}")
+            passed = False
+        else:
+            print(f"✓ {key}: {actual_val}")
+    
     if passed:
-        tests_passed += 1
-        print(f"✅ {test_name}")
-        if details:
-            print(f"   {details}")
+        print("✅ TEST CASE A PASSED")
+        # Verify persisted order
+        internal_order_id = data.get("internalOrderId")
+        if internal_order_id:
+            verify_persisted_order(internal_order_id, expected_rush=True, expected_rush_fee=30, expected_total=47.12)
+        return data
     else:
-        tests_failed += 1
-        print(f"❌ {test_name}")
-        if details:
-            print(f"   {details}")
+        print("❌ TEST CASE A FAILED")
+        return None
 
-def parse_png_ihdr(png_bytes):
-    """Parse PNG IHDR chunk to extract width, height, color type"""
-    try:
-        # PNG signature: 89 50 4E 47 0D 0A 1A 0A (8 bytes)
-        if png_bytes[:8] != b'\x89PNG\r\n\x1a\n':
-            return None, None, None
-        
-        # IHDR chunk starts at byte 8
-        # Chunk structure: 4 bytes length, 4 bytes type, data, 4 bytes CRC
-        # IHDR is always first chunk after signature
-        chunk_length = struct.unpack('>I', png_bytes[8:12])[0]
-        chunk_type = png_bytes[12:16]
-        
-        if chunk_type != b'IHDR':
-            return None, None, None
-        
-        # IHDR data: width(4), height(4), bit_depth(1), color_type(1), ...
-        ihdr_data = png_bytes[16:16+chunk_length]
-        width = struct.unpack('>I', ihdr_data[0:4])[0]
-        height = struct.unpack('>I', ihdr_data[4:8])[0]
-        color_type = ihdr_data[9]
-        
-        return width, height, color_type
-    except Exception as e:
-        print(f"   Error parsing PNG: {e}")
-        return None, None, None
 
-print("=" * 80)
-print("PRODUCTION LIVE ORDER VERIFICATION - Order #120")
-print(f"Base URL: {BASE_URL}")
-print(f"Order ID: {ORDER_ID}")
-print("=" * 80)
-print()
-
-# TEST 1: GET order details
-print("TEST 1: GET /api/orders/{ORDER_ID}")
-print("-" * 80)
-try:
-    response = requests.get(f"{BASE_URL}/api/orders/{ORDER_ID}", timeout=30)
+def test_create_order_rush_pickup():
+    """Test Case B: Rush + pickup"""
+    print("\n=== TEST CASE B: Rush + pickup ===")
+    
+    payload = {
+        "items": [{"sheetId": "14x12", "quantity": 1}],
+        "shipping": {
+            "fullName": "Test Buyer",
+            "email": "nevermoreprintingcompany@yahoo.com",
+            "phone": "808-555-0100"
+        },
+        "deliveryMethod": "pickup",
+        "rush": True
+    }
+    
+    response = requests.post(f"{BASE_URL}/api/paypal/create-order", json=payload)
     print(f"Status: {response.status_code}")
     
-    if response.status_code == 200:
-        order = response.json()
-        
-        # Verify all required fields
-        # Note: status may be PROCESSING if already changed in previous test run
-        status_ok = order.get("status") in ["PAID", "PROCESSING"]
-        checks = [
-            ("status", status_ok, f"Expected 'PAID' or 'PROCESSING', got '{order.get('status')}'"),
-            ("paypalStatus", order.get("paypalStatus") == "COMPLETED", f"Expected 'COMPLETED', got '{order.get('paypalStatus')}'"),
-            ("captureId", order.get("captureId") == "70S58063SB327341X", f"Expected '70S58063SB327341X', got '{order.get('captureId')}'"),
-            ("renderStatus", order.get("renderStatus") == "succeeded", f"Expected 'succeeded', got '{order.get('renderStatus')}'"),
-            ("renderAttempts", order.get("renderAttempts") == 1, f"Expected 1, got {order.get('renderAttempts')}"),
-            ("renderCompletedAt", order.get("renderCompletedAt") is not None, f"renderCompletedAt is missing"),
-            ("deliveryMethod", order.get("deliveryMethod") == "pickup", f"Expected 'pickup', got '{order.get('deliveryMethod')}'"),
-            ("subtotal", order.get("subtotal") == 10, f"Expected 10, got {order.get('subtotal')}"),
-            ("shipping_amount", order.get("shipping_amount") == 0, f"Expected 0, got {order.get('shipping_amount')}"),
-            ("tax", order.get("tax") == 0.47, f"Expected 0.47, got {order.get('tax')}"),
-            ("total", order.get("total") == 10.47, f"Expected 10.47, got {order.get('total')}"),
-            ("taxState", order.get("taxState") == "HI", f"Expected 'HI', got '{order.get('taxState')}'"),
-        ]
-        
-        for check_name, passed, msg in checks:
-            log_test(f"Order field: {check_name}", passed, msg if not passed else "")
-        
-        # Check items array
-        items = order.get("items", [])
-        if len(items) > 0:
-            item = items[0]
-            
-            log_test("items[0].printFileSource", 
-                    item.get("printFileSource") == "sharp-authoritative",
-                    f"Expected 'sharp-authoritative', got '{item.get('printFileSource')}'")
-            
-            composite_size = item.get("compositeSize", 0)
-            log_test("items[0].compositeSize > 1MB", 
-                    composite_size > 1_000_000,
-                    f"Size: {composite_size:,} bytes")
-            
-            composite_url = item.get("compositeUrl", "")
-            log_test("items[0].compositeUrl is Vercel Blob URL", 
-                    "public.blob.vercel-storage.com" in composite_url and composite_url.startswith("https://"),
-                    f"URL: {composite_url[:80]}...")
-            
-            # Store for TEST 2
-            global COMPOSITE_URL
-            COMPOSITE_URL = composite_url
+    if response.status_code != 201:
+        print(f"❌ FAILED: Expected 201, got {response.status_code}")
+        print(f"Response: {response.text}")
+        return None
+    
+    data = response.json()
+    totals = data.get("totals", {})
+    
+    print(f"Totals: {json.dumps(totals, indent=2)}")
+    
+    # Expected: subtotal=10, shipping=0, rushFee=30, tax=1.88, total=41.88, rush=true
+    expected = {
+        "subtotal": 10,
+        "shipping": 0,
+        "rushFee": 30,
+        "tax": 1.88,
+        "total": 41.88,
+        "rush": True
+    }
+    
+    passed = True
+    for key, expected_val in expected.items():
+        actual_val = totals.get(key)
+        if actual_val != expected_val:
+            print(f"❌ {key}: expected {expected_val}, got {actual_val}")
+            passed = False
         else:
-            log_test("items array", False, "No items found in order")
+            print(f"✓ {key}: {actual_val}")
+    
+    if passed:
+        print("✅ TEST CASE B PASSED")
+        # Verify persisted order
+        internal_order_id = data.get("internalOrderId")
+        if internal_order_id:
+            verify_persisted_order(internal_order_id, expected_rush=True, expected_rush_fee=30, expected_total=41.88)
+        return data
     else:
-        log_test("GET order", False, f"Expected 200, got {response.status_code}")
-        print(f"Response: {response.text[:500]}")
-        
-except Exception as e:
-    log_test("GET order", False, f"Exception: {e}")
+        print("❌ TEST CASE B FAILED")
+        return None
 
-print()
 
-# TEST 2: GET compositeUrl and verify PNG
-print("TEST 2: GET compositeUrl and verify PNG dimensions")
-print("-" * 80)
-try:
-    if 'COMPOSITE_URL' in globals():
-        response = requests.get(COMPOSITE_URL, timeout=30)
-        print(f"Status: {response.status_code}")
-        
-        if response.status_code == 200:
-            log_test("GET compositeUrl", True, f"Content-Type: {response.headers.get('Content-Type')}")
-            
-            # Verify PNG magic bytes
-            png_bytes = response.content
-            magic_bytes = png_bytes[:4]
-            log_test("PNG magic bytes", 
-                    magic_bytes == b'\x89PNG',
-                    f"Bytes: {' '.join(f'{b:02x}' for b in magic_bytes)}")
-            
-            # Parse IHDR
-            width, height, color_type = parse_png_ihdr(png_bytes)
-            
-            log_test("PNG width (IHDR)", 
-                    width == 4200,
-                    f"Expected 4200 (14\" × 300 DPI), got {width}")
-            
-            log_test("PNG height (IHDR)", 
-                    height == 3600,
-                    f"Expected 3600 (12\" × 300 DPI), got {height}")
-            
-            log_test("PNG color type (RGBA transparent)", 
-                    color_type == 6,
-                    f"Expected 6 (RGBA), got {color_type}")
+def test_create_order_non_rush_pickup():
+    """Test Case C: Non-rush pickup (regression)"""
+    print("\n=== TEST CASE C: Non-rush pickup (regression) ===")
+    
+    payload = {
+        "items": [{"sheetId": "14x12", "quantity": 1}],
+        "shipping": {
+            "fullName": "Test Buyer",
+            "email": "nevermoreprintingcompany@yahoo.com",
+            "phone": "808-555-0100"
+        },
+        "deliveryMethod": "pickup",
+        "rush": False
+    }
+    
+    response = requests.post(f"{BASE_URL}/api/paypal/create-order", json=payload)
+    print(f"Status: {response.status_code}")
+    
+    if response.status_code != 201:
+        print(f"❌ FAILED: Expected 201, got {response.status_code}")
+        print(f"Response: {response.text}")
+        return None
+    
+    data = response.json()
+    totals = data.get("totals", {})
+    
+    print(f"Totals: {json.dumps(totals, indent=2)}")
+    
+    # Expected: rushFee=0, rush=false, total=10.47
+    expected = {
+        "subtotal": 10,
+        "shipping": 0,
+        "rushFee": 0,
+        "tax": 0.47,
+        "total": 10.47,
+        "rush": False
+    }
+    
+    passed = True
+    for key, expected_val in expected.items():
+        actual_val = totals.get(key)
+        if actual_val != expected_val:
+            print(f"❌ {key}: expected {expected_val}, got {actual_val}")
+            passed = False
         else:
-            log_test("GET compositeUrl", False, f"Expected 200, got {response.status_code}")
+            print(f"✓ {key}: {actual_val}")
+    
+    if passed:
+        print("✅ TEST CASE C PASSED")
+        # Verify persisted order
+        internal_order_id = data.get("internalOrderId")
+        if internal_order_id:
+            verify_persisted_order(internal_order_id, expected_rush=False, expected_rush_fee=0, expected_total=10.47)
+        return data
     else:
-        log_test("GET compositeUrl", False, "compositeUrl not available from TEST 1")
-        
-except Exception as e:
-    log_test("GET compositeUrl", False, f"Exception: {e}")
+        print("❌ TEST CASE C FAILED")
+        return None
 
-print()
 
-# TEST 3: POST rerender with no force (idempotency)
-print("TEST 3: POST /api/orders/{ORDER_ID}/rerender (idempotency check)")
-print("-" * 80)
-try:
-    headers = {"x-admin-token": ADMIN_TOKEN, "Content-Type": "application/json"}
+def test_create_order_ca_ship_rush():
+    """Test Case D: CA ship + rush (out-of-state)"""
+    print("\n=== TEST CASE D: CA ship + rush (out-of-state) ===")
+    
+    payload = {
+        "items": [{"sheetId": "14x24", "quantity": 2}],
+        "shipping": {
+            "fullName": "Test Buyer",
+            "email": "nevermoreprintingcompany@yahoo.com",
+            "line1": "123 Main St",
+            "city": "Los Angeles",
+            "state": "CA",
+            "postalCode": "90001",
+            "country": "US"
+        },
+        "deliveryMethod": "ship",
+        "rush": True
+    }
+    
+    response = requests.post(f"{BASE_URL}/api/paypal/create-order", json=payload)
+    print(f"Status: {response.status_code}")
+    
+    if response.status_code != 201:
+        print(f"❌ FAILED: Expected 201, got {response.status_code}")
+        print(f"Response: {response.text}")
+        return None
+    
+    data = response.json()
+    totals = data.get("totals", {})
+    
+    print(f"Totals: {json.dumps(totals, indent=2)}")
+    
+    # Expected: subtotal=28, shipping=12, rushFee=30, tax=0, total=70.00, rush=true, taxState="CA"
+    expected = {
+        "subtotal": 28,
+        "shipping": 12,
+        "rushFee": 30,
+        "tax": 0,
+        "total": 70.00,
+        "rush": True,
+        "taxState": "CA"
+    }
+    
+    passed = True
+    for key, expected_val in expected.items():
+        actual_val = totals.get(key)
+        if actual_val != expected_val:
+            print(f"❌ {key}: expected {expected_val}, got {actual_val}")
+            passed = False
+        else:
+            print(f"✓ {key}: {actual_val}")
+    
+    if passed:
+        print("✅ TEST CASE D PASSED")
+        # Verify persisted order
+        internal_order_id = data.get("internalOrderId")
+        if internal_order_id:
+            verify_persisted_order(internal_order_id, expected_rush=True, expected_rush_fee=30, expected_total=70.00)
+        return data
+    else:
+        print("❌ TEST CASE D FAILED")
+        return None
+
+
+def test_create_order_backwards_compat():
+    """Test Case E: Backwards compat (no rush field)"""
+    print("\n=== TEST CASE E: Backwards compat (no rush field) ===")
+    
+    payload = {
+        "items": [{"sheetId": "14x12", "quantity": 1}],
+        "shipping": {
+            "fullName": "Test Buyer",
+            "email": "nevermoreprintingcompany@yahoo.com",
+            "line1": "1 Ala Moana",
+            "city": "Honolulu",
+            "state": "HI",
+            "postalCode": "96813",
+            "country": "US"
+        },
+        "deliveryMethod": "ship"
+        # NO rush field
+    }
+    
+    response = requests.post(f"{BASE_URL}/api/paypal/create-order", json=payload)
+    print(f"Status: {response.status_code}")
+    
+    if response.status_code != 201:
+        print(f"❌ FAILED: Expected 201, got {response.status_code}")
+        print(f"Response: {response.text}")
+        return None
+    
+    data = response.json()
+    totals = data.get("totals", {})
+    
+    print(f"Totals: {json.dumps(totals, indent=2)}")
+    
+    # Expected: rushFee=0 or undefined, rush=false or undefined, tax calc treats rush as $0
+    # Total should be 10 + 5 + (10+5)*0.04712 = 15.71
+    rush_fee = totals.get("rushFee", 0)
+    rush = totals.get("rush", False)
+    
+    if rush_fee not in [0, None]:
+        print(f"❌ rushFee: expected 0 or undefined, got {rush_fee}")
+        print("❌ TEST CASE E FAILED")
+        return None
+    
+    if rush not in [False, None]:
+        print(f"❌ rush: expected false or undefined, got {rush}")
+        print("❌ TEST CASE E FAILED")
+        return None
+    
+    # Tax should be calculated without rush fee
+    expected_tax = round((10 + 5) * 0.04712, 2)
+    actual_tax = totals.get("tax")
+    
+    if actual_tax != expected_tax:
+        print(f"❌ tax: expected {expected_tax}, got {actual_tax}")
+        print("❌ TEST CASE E FAILED")
+        return None
+    
+    print(f"✓ rushFee: {rush_fee} (0 or undefined)")
+    print(f"✓ rush: {rush} (false or undefined)")
+    print(f"✓ tax: {actual_tax} (calculated without rush)")
+    print("✅ TEST CASE E PASSED")
+    
+    # Verify persisted order
+    internal_order_id = data.get("internalOrderId")
+    if internal_order_id:
+        verify_persisted_order(internal_order_id, expected_rush=False, expected_rush_fee=0, expected_total=totals.get("total"))
+    
+    return data
+
+
+def verify_persisted_order(order_id: str, expected_rush: bool, expected_rush_fee: float, expected_total: float):
+    """Verify the persisted order document"""
+    print(f"\n  → Verifying persisted order {order_id}")
+    
+    response = requests.get(f"{BASE_URL}/api/orders/{order_id}")
+    
+    if response.status_code != 200:
+        print(f"  ❌ Failed to fetch order: {response.status_code}")
+        return
+    
+    order = response.json()
+    
+    # Check rush field
+    actual_rush = order.get("rush", False)
+    if actual_rush != expected_rush:
+        print(f"  ❌ rush: expected {expected_rush}, got {actual_rush}")
+    else:
+        print(f"  ✓ rush: {actual_rush}")
+    
+    # Check rushFee field
+    actual_rush_fee = order.get("rushFee", 0)
+    if actual_rush_fee != expected_rush_fee:
+        print(f"  ❌ rushFee: expected {expected_rush_fee}, got {actual_rush_fee}")
+    else:
+        print(f"  ✓ rushFee: {actual_rush_fee}")
+    
+    # Check total
+    actual_total = order.get("total")
+    if actual_total != expected_total:
+        print(f"  ❌ total: expected {expected_total}, got {actual_total}")
+    else:
+        print(f"  ✓ total: {actual_total}")
+
+
+def test_cart_validate_rush():
+    """Feature 2: POST /api/cart/validate accepts rush"""
+    print("\n=== FEATURE 2: POST /api/cart/validate with rush ===")
+    
+    payload = {
+        "items": [{"sheetId": "14x12", "quantity": 1, "unitPrice": 9999}],
+        "shipping": {"state": "HI", "country": "US"},
+        "deliveryMethod": "pickup",
+        "rush": True
+    }
+    
+    response = requests.post(f"{BASE_URL}/api/cart/validate", json=payload)
+    print(f"Status: {response.status_code}")
+    
+    if response.status_code != 200:
+        print(f"❌ FAILED: Expected 200, got {response.status_code}")
+        print(f"Response: {response.text}")
+        return False
+    
+    data = response.json()
+    print(f"Response: {json.dumps(data, indent=2)}")
+    
+    # Expected: total=41.88 (proves it recomputes and includes rush)
+    expected_total = 41.88
+    actual_total = data.get("total")
+    
+    if actual_total != expected_total:
+        print(f"❌ total: expected {expected_total}, got {actual_total}")
+        print("❌ FEATURE 2 FAILED")
+        return False
+    
+    print(f"✓ total: {actual_total} (includes rush fee)")
+    print("✅ FEATURE 2 PASSED")
+    return True
+
+
+def test_regression_health():
+    """Regression: GET /api/health"""
+    print("\n=== REGRESSION: GET /api/health ===")
+    
+    response = requests.get(f"{BASE_URL}/api/health")
+    print(f"Status: {response.status_code}")
+    
+    if response.status_code != 200:
+        print(f"❌ FAILED: Expected 200, got {response.status_code}")
+        return False
+    
+    data = response.json()
+    
+    # Check mongo.ok=true
+    mongo_ok = data.get("checks", {}).get("mongo", {}).get("ok")
+    if mongo_ok != True:
+        print(f"❌ mongo.ok: expected true, got {mongo_ok}")
+        return False
+    print(f"✓ mongo.ok: {mongo_ok}")
+    
+    # Check paypal.ok=true
+    paypal_ok = data.get("checks", {}).get("paypal", {}).get("ok")
+    if paypal_ok != True:
+        print(f"❌ paypal.ok: expected true, got {paypal_ok}")
+        return False
+    print(f"✓ paypal.ok: {paypal_ok}")
+    
+    # Check paypal.base=api-m.paypal.com
+    paypal_base = data.get("checks", {}).get("paypal", {}).get("base")
+    if "api-m.paypal.com" not in paypal_base:
+        print(f"❌ paypal.base: expected api-m.paypal.com, got {paypal_base}")
+        return False
+    print(f"✓ paypal.base: {paypal_base}")
+    
+    # Check PAYPAL_ENV='live'
+    paypal_env = data.get("checks", {}).get("env", {}).get("PAYPAL_ENV")
+    if paypal_env != "live":
+        print(f"❌ PAYPAL_ENV: expected 'live', got {paypal_env}")
+        return False
+    print(f"✓ PAYPAL_ENV: {paypal_env}")
+    
+    print("✅ REGRESSION: /api/health PASSED")
+    return True
+
+
+def test_regression_cart_validate_tampered():
+    """Regression: POST /api/cart/validate with tampered unitPrice"""
+    print("\n=== REGRESSION: POST /api/cart/validate with tampered price ===")
+    
+    payload = {
+        "items": [{"sheetId": "14x36", "quantity": 2, "unitPrice": 9999}],
+        "shipping": {"state": "HI", "country": "US"},
+        "deliveryMethod": "pickup"
+    }
+    
+    response = requests.post(f"{BASE_URL}/api/cart/validate", json=payload)
+    print(f"Status: {response.status_code}")
+    
+    if response.status_code != 200:
+        print(f"❌ FAILED: Expected 200, got {response.status_code}")
+        return False
+    
+    data = response.json()
+    
+    # Check that unitPrice was recomputed to 18
+    items = data.get("items", [])
+    if not items:
+        print("❌ No items in response")
+        return False
+    
+    actual_unit_price = items[0].get("unitPrice")
+    if actual_unit_price != 18:
+        print(f"❌ unitPrice: expected 18, got {actual_unit_price}")
+        return False
+    
+    print(f"✓ unitPrice recomputed: {actual_unit_price}")
+    print("✅ REGRESSION: cart/validate tampered price PASSED")
+    return True
+
+
+def test_regression_admin_status():
+    """Regression: POST /api/orders/[id]/status with admin token"""
+    print("\n=== REGRESSION: POST /api/orders/[id]/status ===")
+    
+    # Use order 121 or 122 as mentioned in the review request
+    # First, let's try to find a recent order
+    # We'll use one of the orders we just created
+    
+    # Create a test order first
+    payload = {
+        "items": [{"sheetId": "14x12", "quantity": 1}],
+        "shipping": {
+            "fullName": "Test",
+            "email": "nevermoreprintingcompany@yahoo.com",
+            "phone": "808-555-0100"
+        },
+        "deliveryMethod": "pickup",
+        "rush": False
+    }
+    
+    create_response = requests.post(f"{BASE_URL}/api/paypal/create-order", json=payload)
+    if create_response.status_code != 201:
+        print(f"❌ Failed to create test order: {create_response.status_code}")
+        return False
+    
+    order_id = create_response.json().get("internalOrderId")
+    print(f"Created test order: {order_id}")
+    
+    # Now update status
+    headers = {"x-admin-token": ADMIN_TOKEN}
+    status_payload = {"status": "PROCESSING"}
+    
     response = requests.post(
-        f"{BASE_URL}/api/orders/{ORDER_ID}/rerender",
-        json={},
-        headers=headers,
-        timeout=30
+        f"{BASE_URL}/api/orders/{order_id}/status",
+        json=status_payload,
+        headers=headers
     )
+    
     print(f"Status: {response.status_code}")
     
-    if response.status_code == 200:
-        result = response.json()
-        print(f"Response: {result}")
-        
-        log_test("Rerender idempotency: alreadySucceeded", 
-                result.get("alreadySucceeded") == True,
-                f"Expected true, got {result.get('alreadySucceeded')}")
-        
-        log_test("Rerender idempotency: renderedCount", 
-                result.get("renderedCount") == 0,
-                f"Expected 0, got {result.get('renderedCount')}")
-    else:
-        log_test("POST rerender", False, f"Expected 200, got {response.status_code}")
-        print(f"Response: {response.text[:500]}")
-        
-except Exception as e:
-    log_test("POST rerender", False, f"Exception: {e}")
-
-print()
-
-# TEST 4: POST status change to PROCESSING
-print("TEST 4: POST /api/orders/{ORDER_ID}/status (change to PROCESSING)")
-print("-" * 80)
-try:
-    headers = {"x-admin-token": ADMIN_TOKEN, "Content-Type": "application/json"}
-    response = requests.post(
-        f"{BASE_URL}/api/orders/{ORDER_ID}/status",
-        json={"status": "PROCESSING"},
-        headers=headers,
-        timeout=30
-    )
-    print(f"Status: {response.status_code}")
+    if response.status_code != 200:
+        print(f"❌ FAILED: Expected 200, got {response.status_code}")
+        print(f"Response: {response.text}")
+        return False
     
-    if response.status_code == 200:
-        result = response.json()
-        print(f"Response: {result}")
-        
-        log_test("Status change: ok", 
-                result.get("ok") == True,
-                f"Expected true, got {result.get('ok')}")
-        
-        email_result = result.get("email", {})
-        log_test("Status change: email.ok", 
-                email_result.get("ok") == True,
-                f"Expected true (external send to rave96792@yahoo.com), got {email_result.get('ok')}")
-        
-        # Verify status was actually changed
-        verify_response = requests.get(f"{BASE_URL}/api/orders/{ORDER_ID}", timeout=30)
-        if verify_response.status_code == 200:
-            order = verify_response.json()
-            log_test("Status persisted in DB", 
-                    order.get("status") == "PROCESSING",
-                    f"Expected 'PROCESSING', got '{order.get('status')}'")
+    data = response.json()
+    
+    # Check ok=true
+    if data.get("ok") != True:
+        print(f"❌ ok: expected true, got {data.get('ok')}")
+        return False
+    print(f"✓ ok: {data.get('ok')}")
+    
+    # Check email.ok=true
+    email_ok = data.get("email", {}).get("ok")
+    if email_ok != True:
+        print(f"❌ email.ok: expected true, got {email_ok}")
+        return False
+    print(f"✓ email.ok: {email_ok}")
+    
+    print("✅ REGRESSION: admin status update PASSED")
+    return True
+
+
+def main():
+    print("=" * 80)
+    print("RUSH PRODUCTION UPCHARGE FEATURE VERIFICATION")
+    print("Testing against: https://www.nevermoredtf.com")
+    print("=" * 80)
+    
+    results = {
+        "Feature 1 - Test Case A (Rush + HI ship)": False,
+        "Feature 1 - Test Case B (Rush + pickup)": False,
+        "Feature 1 - Test Case C (Non-rush pickup)": False,
+        "Feature 1 - Test Case D (CA ship + rush)": False,
+        "Feature 1 - Test Case E (Backwards compat)": False,
+        "Feature 2 - cart/validate with rush": False,
+        "Regression - /api/health": False,
+        "Regression - cart/validate tampered": False,
+        "Regression - admin status": False
+    }
+    
+    # Feature 1: Rush production upcharge
+    if test_create_order_rush_hi_ship():
+        results["Feature 1 - Test Case A (Rush + HI ship)"] = True
+    
+    if test_create_order_rush_pickup():
+        results["Feature 1 - Test Case B (Rush + pickup)"] = True
+    
+    if test_create_order_non_rush_pickup():
+        results["Feature 1 - Test Case C (Non-rush pickup)"] = True
+    
+    if test_create_order_ca_ship_rush():
+        results["Feature 1 - Test Case D (CA ship + rush)"] = True
+    
+    if test_create_order_backwards_compat():
+        results["Feature 1 - Test Case E (Backwards compat)"] = True
+    
+    # Feature 2: cart/validate with rush
+    if test_cart_validate_rush():
+        results["Feature 2 - cart/validate with rush"] = True
+    
+    # Regression tests
+    if test_regression_health():
+        results["Regression - /api/health"] = True
+    
+    if test_regression_cart_validate_tampered():
+        results["Regression - cart/validate tampered"] = True
+    
+    if test_regression_admin_status():
+        results["Regression - admin status"] = True
+    
+    # Summary
+    print("\n" + "=" * 80)
+    print("TEST SUMMARY")
+    print("=" * 80)
+    
+    passed = 0
+    failed = 0
+    
+    for test_name, result in results.items():
+        status = "✅ PASS" if result else "❌ FAIL"
+        print(f"{status} - {test_name}")
+        if result:
+            passed += 1
         else:
-            log_test("Status persisted in DB", False, "Could not verify order status")
-    else:
-        log_test("POST status", False, f"Expected 200, got {response.status_code}")
-        print(f"Response: {response.text[:500]}")
-        
-except Exception as e:
-    log_test("POST status", False, f"Exception: {e}")
-
-print()
-
-# TEST 5: Sanity health check
-print("TEST 5: GET /api/health (sanity check)")
-print("-" * 80)
-try:
-    response = requests.get(f"{BASE_URL}/api/health", timeout=30)
-    print(f"Status: {response.status_code}")
+            failed += 1
     
-    if response.status_code == 200:
-        health = response.json()
-        
-        log_test("Health: mongo.ok", 
-                health.get("checks", {}).get("mongo", {}).get("ok") == True,
-                f"mongo.ok = {health.get('checks', {}).get('mongo', {}).get('ok')}")
-        
-        log_test("Health: paypal.ok", 
-                health.get("checks", {}).get("paypal", {}).get("ok") == True,
-                f"paypal.ok = {health.get('checks', {}).get('paypal', {}).get('ok')}")
-        
-        paypal_base = health.get("checks", {}).get("paypal", {}).get("base", "")
-        log_test("Health: paypal.base (LIVE)", 
-                paypal_base == "https://api-m.paypal.com",
-                f"Expected 'https://api-m.paypal.com', got '{paypal_base}'")
-        
-        paypal_env = health.get("checks", {}).get("env", {}).get("PAYPAL_ENV", "")
-        log_test("Health: PAYPAL_ENV", 
-                paypal_env == "live",
-                f"Expected 'live', got '{paypal_env}'")
-        
-        resend_key = health.get("checks", {}).get("env", {}).get("RESEND_API_KEY", False)
-        log_test("Health: RESEND_API_KEY", 
-                resend_key == True,
-                f"RESEND_API_KEY present = {resend_key}")
-    else:
-        log_test("GET health", False, f"Expected 200, got {response.status_code}")
-        print(f"Response: {response.text[:500]}")
-        
-except Exception as e:
-    log_test("GET health", False, f"Exception: {e}")
+    print("\n" + "=" * 80)
+    print(f"TOTAL: {passed} passed, {failed} failed out of {passed + failed} tests")
+    print("=" * 80)
+    
+    return failed == 0
 
-print()
-print("=" * 80)
-print(f"RESULTS: {tests_passed} passed, {tests_failed} failed")
-print("=" * 80)
 
-sys.exit(0 if tests_failed == 0 else 1)
+if __name__ == "__main__":
+    success = main()
+    exit(0 if success else 1)

@@ -460,6 +460,54 @@ backend_prod_recovery:
             - Email delivery to external recipients (Justin Madeira, jbmadeira85@gmail.com)
             - Whether email.ok is now TRUE (was FALSE before the fix)
             - SHIPPED status email with tracking info
+        - working: true
+          agent: "testing"
+          comment: |
+            ✅ RESEND EMAIL FIX VERIFIED ON PRODUCTION - ALL 4 TESTS PASSED
+            
+            Retry verification on PRODUCTION (https://www.nevermoredtf.com) using correct production ADMIN_TOKEN from /app/memory/test_credentials.md.
+            Previous run failed because it used LOCAL admin token from /app/.env instead of PRODUCTION token.
+            
+            **TEST 1: Send PROCESSING email to real customer (external recipient) - ✅ PASSED**
+            - POST /api/orders/c034211c-a3dc-4902-82db-a318bc24cddb/status with {status:"PROCESSING"}
+            - Result: HTTP 200
+            - Response: ok:true, status:"PROCESSING", email.ok:true, email.id:"d8dac1a3-815b-4699-8fe8-338b97d25f7b" ✓
+            - **CRITICAL FIX VERIFIED**: Email successfully sent to external recipient (Justin Madeira, jbmadeira85@gmail.com)
+            - email.ok is now TRUE (was FALSE before the Resend API key upgrade)
+            
+            **TEST 2: /api/email/test regression - ✅ PASSED**
+            - POST https://www.nevermoredtf.com/api/email/test → 200
+            - results.shop.ok: true, id: "f8ca20fd-fbf2-4b7f-9f04-2fda9da77cce" ✓
+            - results.buyer.ok: true, id: "d380f622-3c27-408c-89cd-a133ffd1a2a6" ✓
+            - Both self-send emails working correctly
+            
+            **TEST 3: /api/health clean - ✅ PASSED**
+            - GET https://www.nevermoredtf.com/api/health → 200
+            - checks.mongo.ok: true ✓
+            - checks.paypal.ok: true, base: "https://api-m.paypal.com" ✓
+            - checks.env.PAYPAL_ENV: "live" ✓
+            - MAIL_FROM_runtime: NOT PRESENT (correctly removed) ✓
+            - MAIL_SHOP_TO_runtime: NOT PRESENT (correctly removed) ✓
+            - Health endpoint clean, no temporary diagnostic fields
+            
+            **TEST 4: Send SHIPPED email with tracking - ✅ PASSED**
+            - POST /api/orders/c034211c-.../status with {status:"SHIPPED", trackingNumber:"1Z999AA10123456784", carrier:"USPS"}
+            - Result: HTTP 200
+            - Response: ok:true, status:"SHIPPED", email.ok:true, email.id:"ea474ed0-1032-4fb7-ab96-fd1d3ab18ca6" ✓
+            - GET /api/orders/c034211c-... confirmed: trackingNumber:"1Z999AA10123456784", carrier:"USPS", status:"SHIPPED" ✓
+            - Tracking info correctly stored in order document
+            
+            **CLEANUP: Reset to PROCESSING - ✅ PASSED**
+            - POST /api/orders/c034211c-.../status with {status:"PROCESSING"}
+            - Result: HTTP 200, email.ok:true, id:"b7133d16-a69a-44a6-a92b-571c5837d637" ✓
+            
+            **SUMMARY:**
+            ✅ THE RESEND EMAIL FIX IS FULLY VERIFIED - emails now successfully send to external recipients (not just shop's own address)
+            ✅ All regression tests passed - /api/email/test and /api/health working correctly
+            ✅ Health endpoint cleaned up - no temporary diagnostic fields
+            ✅ SHIPPED status email with tracking info working correctly
+            
+            **NO BUGS FOUND** - Resend email integration fully operational on production after API key upgrade.
 
 test_plan_previous_batch:
 
@@ -1136,3 +1184,24 @@ agent_communication:
         4. Use Vercel CLI (`vercel env pull`) to sync production env vars to local
         
         The core Resend fix (upgrading API key) cannot be fully verified without admin access to trigger status-change emails to external recipients.
+
+    - agent: "testing"
+      message: |
+        ✅ RESEND EMAIL FIX FULLY VERIFIED ON PRODUCTION - ALL 4 TESTS PASSED
+        
+        Retry verification completed successfully on PRODUCTION (https://www.nevermoredtf.com) using correct production ADMIN_TOKEN from /app/memory/test_credentials.md.
+        
+        **CRITICAL FIX VERIFIED:**
+        - Email delivery to external recipients (Justin Madeira, jbmadeira85@gmail.com) NOW WORKING ✓
+        - email.ok is now TRUE for external recipients (was FALSE before the Resend API key upgrade) ✓
+        - SHIPPED status email with tracking info working correctly ✓
+        
+        **TEST RESULTS:**
+        1. Send PROCESSING email to real customer → 200, email.ok:true, id:"d8dac1a3-815b-4699-8fe8-338b97d25f7b" ✓
+        2. /api/email/test regression → 200, shop.ok:true, buyer.ok:true ✓
+        3. /api/health clean → 200, no temporary MAIL_FROM_runtime or MAIL_SHOP_TO_runtime fields ✓
+        4. Send SHIPPED email with tracking → 200, email.ok:true, tracking info stored correctly ✓
+        
+        **NO BUGS FOUND** - Resend email integration fully operational on production. The previous PARTIAL result was due to using wrong admin token (local instead of production).
+        
+        Task "Production checkout recovery" marked working:true, needs_retesting:false.

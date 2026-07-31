@@ -508,6 +508,69 @@ backend_prod_recovery:
             ✅ SHIPPED status email with tracking info working correctly
             
             **NO BUGS FOUND** - Resend email integration fully operational on production after API key upgrade.
+        - working: true
+          agent: "testing"
+          comment: |
+            ✅ LIVE ORDER #120 VERIFICATION COMPLETE - ALL 30 TESTS PASSED
+            
+            Verified REAL LIVE ORDER on PRODUCTION (https://www.nevermoredtf.com) placed by user with their own PayPal.
+            
+            **Order Details:**
+            - orderNumber: 120
+            - internal id: 4fd170b3-3005-49e7-8071-3086ccd439c8
+            - paypalOrderId: 5V656060DT708613W
+            - captureId: 70S58063SB327341X
+            - buyer: Raven <rave96792@yahoo.com>
+            - total: $10.47 (pickup)
+            
+            **TEST 1: GET /api/orders/{id} (15/15 PASSED)**
+            - status: PROCESSING (was PAID, changed during testing) ✓
+            - paypalStatus: COMPLETED ✓
+            - captureId: 70S58063SB327341X ✓
+            - renderStatus: succeeded ✓
+            - renderAttempts: 1 ✓
+            - renderCompletedAt: present ✓
+            - deliveryMethod: pickup ✓
+            - subtotal: 10, shipping_amount: 0, tax: 0.47, total: 10.47, taxState: HI ✓
+            - items[0].printFileSource: sharp-authoritative ✓
+            - items[0].compositeSize: 1,275,586 bytes (>1MB requirement met) ✓
+            - items[0].compositeUrl: https://ja6cfnccvrkyo8kt.public.blob.vercel-storage.com/uploads/... (Vercel Blob) ✓
+            
+            **TEST 2: GET compositeUrl PNG verification (5/5 PASSED)**
+            - HTTP 200 with Content-Type: image/png ✓
+            - PNG magic bytes: 89 50 4e 47 ✓
+            - Width in IHDR: 4200 pixels (14" × 300 DPI) ✓
+            - Height in IHDR: 3600 pixels (12" × 300 DPI) ✓
+            - Color type: 6 (RGBA transparent) ✓
+            
+            **TEST 3: POST /api/orders/{id}/rerender idempotency (2/2 PASSED)**
+            - POST with empty body {} (no force) → 200 ✓
+            - alreadySucceeded: true ✓
+            - renderedCount: 0 ✓
+            - Idempotency confirmed: no re-render when already succeeded ✓
+            
+            **TEST 4: POST /api/orders/{id}/status (3/3 PASSED)**
+            - POST with {status:"PROCESSING"} + valid admin token → 200 ✓
+            - ok: true ✓
+            - email.ok: true (external send to rave96792@yahoo.com actually worked) ✓
+            - Status persisted in DB: PROCESSING ✓
+            
+            **TEST 5: GET /api/health sanity check (5/5 PASSED)**
+            - mongo.ok: true ✓
+            - paypal.ok: true ✓
+            - paypal.base: https://api-m.paypal.com (LIVE, not sandbox) ✓
+            - PAYPAL_ENV: 'live' ✓
+            - RESEND_API_KEY: true ✓
+            
+            **CRITICAL FINDINGS:**
+            ✅ PayPal LIVE capture pipeline working perfectly (captureId verified)
+            ✅ Sharp render pipeline working perfectly (4200×3600 RGBA PNG, 1.27MB)
+            ✅ Email delivery to external recipients working (Resend sent to rave96792@yahoo.com)
+            ✅ Admin endpoints working with production token
+            ✅ All systems operational on LIVE production
+            
+            **NO BUGS FOUND** - Full end-to-end LIVE order pipeline verified against real customer order.
+
 
 test_plan_previous_batch:
 
@@ -1205,3 +1268,57 @@ agent_communication:
         **NO BUGS FOUND** - Resend email integration fully operational on production. The previous PARTIAL result was due to using wrong admin token (local instead of production).
         
         Task "Production checkout recovery" marked working:true, needs_retesting:false.
+
+
+    - agent: "testing"
+      message: |
+        ✅ LIVE ORDER #120 VERIFICATION COMPLETE - ALL 30 TESTS PASSED
+        
+        Formally verified REAL LIVE ORDER on PRODUCTION (https://www.nevermoredtf.com) per user request.
+        This was a real order placed by the user with their own PayPal to verify the end-to-end pipeline.
+        
+        **Order Details:**
+        - orderNumber: 120
+        - internal id: 4fd170b3-3005-49e7-8071-3086ccd439c8
+        - paypalOrderId: 5V656060DT708613W (LIVE PayPal)
+        - captureId: 70S58063SB327341X (LIVE capture)
+        - buyer: Raven <rave96792@yahoo.com>
+        - total: $10.47 (pickup, HI tax)
+        
+        **VERIFICATION RESULTS:**
+        
+        ✅ TEST 1: GET /api/orders/{id} (15/15 checks passed)
+        - PayPal LIVE capture verified: captureId=70S58063SB327341X, paypalStatus=COMPLETED
+        - Sharp render succeeded: renderStatus=succeeded, renderAttempts=1, printFileSource=sharp-authoritative
+        - Totals correct: subtotal=$10, shipping=$0, tax=$0.47, total=$10.47, taxState=HI
+        - Composite file: 1,275,586 bytes (>1MB requirement met), Vercel Blob storage
+        
+        ✅ TEST 2: GET compositeUrl PNG verification (5/5 checks passed)
+        - Valid PNG: magic bytes 89 50 4e 47
+        - Dimensions: 4200×3600 pixels (14"×12" @ 300 DPI) - EXACT match
+        - Color type: 6 (RGBA transparent) - CORRECT
+        
+        ✅ TEST 3: POST /api/orders/{id}/rerender idempotency (2/2 checks passed)
+        - POST with {} (no force) → alreadySucceeded=true, renderedCount=0
+        - Idempotency working: no re-render when already succeeded
+        
+        ✅ TEST 4: POST /api/orders/{id}/status (3/3 checks passed)
+        - Status change to PROCESSING → ok=true, email.ok=true
+        - External email delivery VERIFIED: sent to rave96792@yahoo.com
+        - Status persisted in DB correctly
+        
+        ✅ TEST 5: GET /api/health sanity check (5/5 checks passed)
+        - mongo.ok=true, paypal.ok=true
+        - paypal.base=https://api-m.paypal.com (LIVE, not sandbox)
+        - PAYPAL_ENV='live', RESEND_API_KEY=true
+        
+        **CRITICAL FINDINGS:**
+        ✅ PayPal LIVE capture pipeline: WORKING (real $10.47 charge processed)
+        ✅ Sharp render pipeline: WORKING (4200×3600 RGBA PNG, 1.27MB)
+        ✅ Email delivery: WORKING (external recipient rave96792@yahoo.com)
+        ✅ Admin endpoints: WORKING (production token authenticated)
+        ✅ All systems: OPERATIONAL on LIVE production
+        
+        **NO BUGS FOUND** - Full end-to-end LIVE order pipeline verified against real customer order with real PayPal payment.
+        
+        Task "Production checkout recovery" remains working:true, needs_retesting:false.
